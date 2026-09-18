@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+.env
+.env.local
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+main.txt
+lock.txt
+test_*.txt
+*.crypt*
+dist/

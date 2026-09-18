@@ -1,0 +1,32 @@
+{
+  "name": "wape",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "wape": "./src/cli/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "scripts": {
+    "wape": "bun run src/cli/index.ts",
+    "scan": "bun run src/cli/index.ts scan",
+    "room": "bun run src/cli/index.ts room",
+    "rooms": "bun run src/cli/index.ts room",
+    "common": "bun run src/cli/index.ts common",
+    "inventory": "bun run src/cli/index.ts inventory",
+    "lists": "bun run src/cli/index.ts lists"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.2",
+    "@t3-oss/env-core": "^0.13.11",
+    "commander": "^15.0.0",
+    "drizzle-orm": "^0.45.2",
+    "picocolors": "^1.1.1",
+    "zod": "^4.6.5"
+  }
+}
