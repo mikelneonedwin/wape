@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 export interface Room {
   id: string;
@@ -96,9 +96,14 @@ export function getRooms(): Room[] {
   }
 }
 
+export interface RoomsConfigFile {
+  version: string;
+  rooms: Room[];
+}
+
 export function saveRooms(rooms: Room[]): void {
   const file = getRoomsConfigFile();
-  const config: WapeConfig = {
+  const config: RoomsConfigFile = {
     version: "1.0.0",
     rooms,
   };
@@ -145,7 +150,8 @@ export function renameRoomId(oldId: string, newId: string): { success: boolean; 
 
   const rooms = getRooms();
   const roomIndex = rooms.findIndex((r) => r.id.toLowerCase() === cleanOldId);
-  if (roomIndex === -1) {
+  const currentRoom = rooms[roomIndex];
+  if (roomIndex === -1 || !currentRoom) {
     return { success: false, error: `Room '${cleanOldId}' not found.` };
   }
 
@@ -169,7 +175,7 @@ export function renameRoomId(oldId: string, newId: string): { success: boolean; 
   }
 
   rooms[roomIndex] = {
-    ...rooms[roomIndex],
+    ...currentRoom,
     id: cleanNewId,
     targetList: `${cleanNewId}.txt`,
     updatedAt: Date.now(),
@@ -196,19 +202,19 @@ export function resolveListFilePath(listNameOrPath: string): string {
   }
 
   // If explicit absolute path or homedir path
-  if (trimmed.startsWith("/") || trimmed.startsWith("~")) {
-    if (trimmed.startsWith("~/")) {
+  if (isAbsolute(trimmed) || trimmed.startsWith("~")) {
+    if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
       return join(homedir(), trimmed.slice(2));
     }
     return resolve(trimmed);
   }
 
-  // If path contains directory separators (e.g. subdir/custom.txt), but not just ./
-  if (trimmed.includes("/") && !trimmed.startsWith("./")) {
+  // If path contains directory separators (e.g. subdir/custom.txt or subdir\\custom.txt), but not just ./ or .\\
+  if ((trimmed.includes("/") || trimmed.includes("\\")) && !trimmed.startsWith("./") && !trimmed.startsWith(".\\")) {
     return resolve(trimmed);
   }
 
-  const cleanName = trimmed.replace(/^\.\//, "");
+  const cleanName = trimmed.replace(/^(\.\/|\.\\)/, "");
   const filename = cleanName.endsWith(".txt") ? cleanName : `${cleanName}.txt`;
   return join(getWapeListsDir(), filename);
 }

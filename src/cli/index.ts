@@ -17,7 +17,6 @@ import { formatPhoneNumber } from "../services/phone";
 import {
   createRoomInteractive,
   editRoomInteractive,
-  manageRoomsMenu,
   printRoomDetail,
   printRoomsTable,
 } from "./room-manager";
@@ -30,7 +29,6 @@ import {
   getMainListPath,
   getRoomById,
   getRooms,
-  getWapeConfigFile,
   renameRoomId,
   resolveListFilePath,
   saveAppConfig,
@@ -164,19 +162,65 @@ async function executeGroupExport(
   console.log("=".repeat(52) + "\n");
 }
 
+async function scanSingleRoom(
+  db: ReturnType<typeof getDatabase>,
+  groups: Awaited<ReturnType<typeof fetchAllGroups>>,
+  room: Room,
+  opts?: { main?: boolean; lock?: boolean }
+) {
+  const groupMap = new Map(groups.map((g) => [g.jidRowId, g]));
+  const activeJids: number[] = [];
+  const labels: string[] = [];
+  const missingNames: string[] = [];
+
+  room.groupJidRowIds.forEach((jid, idx) => {
+    const g = groupMap.get(jid);
+    if (g) {
+      activeJids.push(jid);
+      labels.push(formatGroupLabel(g));
+    } else {
+      const name = room.groupNames && room.groupNames[idx] ? room.groupNames[idx] : `JID ${jid}`;
+      missingNames.push(name);
+    }
+  });
+
+  console.log(pc.cyan(`\n🏠 Scanning Room '${pc.bold(room.id)}' (${activeJids.length} active groups)...`));
+
+  if (missingNames.length > 0) {
+    console.log(
+      pc.yellow(
+        `⚠️ Note: ${missingNames.length} group(s) in room '${room.id}' are missing/exited and will be skipped:`
+      )
+    );
+    missingNames.forEach((name) => console.log(`   ${pc.red("•")} ${pc.strikethrough(pc.dim(name))}`));
+  }
+
+  if (activeJids.length === 0) {
+    console.log(pc.yellow(`No active groups to scan in room '${room.id}'.\n`));
+    return;
+  }
+
+  let forcedList: string | undefined;
+  if (opts?.main) forcedList = getMainListPath();
+  else if (opts?.lock) forcedList = getLockListPath();
+
+  await executeGroupExport(db, activeJids, labels, {
+    forcedTargetList: forcedList,
+    roomContext: room,
+  });
+}
+
 /**
- * Scan / Export Command
+ * Scan Command
  */
 program
   .command("scan [target]")
-  .alias("export")
-  .alias("extract")
   .description("Scan WhatsApp groups or a configured room and export unique Nigerian phone numbers")
   .option("-b, --backup <path>", "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)")
   .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .option("-l, --list <name>", "Explicit destination list name or path")
-  .option("-g, --global", "Force output to global main list")
-  .action(async (target?: string, options?: { backup?: string; key?: string; list?: string; global?: boolean }) => {
+  .option("--main", "Force output to global main list")
+  .option("--lock", "Force output to global lock list")
+  .action(async (target?: string, options?: { backup?: string; key?: string; main?: boolean; lock?: boolean }) => {
     try {
       console.log(pc.cyan("\n📱 wape - WhatsApp Group Contact Scanner\n"));
       console.log(pc.dim("Decrypting / preparing SQLite database..."));
@@ -189,13 +233,11 @@ program
 
       const rooms = getRooms();
       let roomToScan: Room | null = null;
-      let targetJids: number[] = [];
-      let selectedLabels: string[] = [];
 
       if (target) {
         roomToScan = getRoomById(target);
         if (!roomToScan) {
-          console.error(pc.red(`Room with ID '${target}' not found. Use 'wape room list' to see rooms.`));
+          console.error(pc.red(`Room with ID '${target}' not found. Use 'wape rooms list' to see rooms.`));
           process.exit(1);
         }
       } else if (rooms.length > 0) {
@@ -217,7 +259,7 @@ program
           const pickedRoomId = await select<string>({
             message: "Select room to scan:",
             choices: rooms.map((r) => ({
-              name: `${r.name} ${pc.dim(`[${r.id}] (${r.groupJidRowIds.length} groups)`)}`,
+              name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
               value: r.id,
             })),
           });
@@ -226,34 +268,12 @@ program
       }
 
       if (roomToScan) {
-        const groupMap = new Map(groups.map((g) => [g.jidRowId, g]));
-        const activeJids: number[] = [];
-        const missingNames: string[] = [];
-
-        roomToScan.groupJidRowIds.forEach((jid, idx) => {
-          const g = groupMap.get(jid);
-          if (g) {
-            activeJids.push(jid);
-            selectedLabels.push(formatGroupLabel(g));
-          } else {
-            const name = roomToScan?.groupNames && roomToScan.groupNames[idx] ? roomToScan.groupNames[idx] : `JID ${jid}`;
-            missingNames.push(name);
-          }
+        await scanSingleRoom(db, groups, roomToScan, {
+          main: options?.main,
+          lock: options?.lock,
         });
-
-        if (missingNames.length > 0) {
-          console.log(
-            pc.yellow(
-              `⚠️ Note: ${missingNames.length} group(s) in room '${roomToScan.name}' are missing/exited and will be skipped during scan:`
-            )
-          );
-          missingNames.forEach((name) => console.log(`   ${pc.red("•")} ${pc.strikethrough(pc.dim(name))}`));
-          console.log("");
-        }
-
-        targetJids = activeJids;
       } else {
-        targetJids = await searchCheckbox({
+        const targetJids = await searchCheckbox({
           message: "Select group chats (Type to filter, Space to check, Enter to submit):",
           pageSize: 16,
           required: true,
@@ -265,18 +285,19 @@ program
         });
 
         const selectedGroups = groups.filter((g) => targetJids.includes(g.jidRowId));
-        selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
-      }
+        const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
 
-      let forcedList: string | undefined = options?.list;
-      if (options?.global) {
-        forcedList = getMainListPath();
-      }
+        let forcedList: string | undefined;
+        if (options?.main) {
+          forcedList = getMainListPath();
+        } else if (options?.lock) {
+          forcedList = getLockListPath();
+        }
 
-      await executeGroupExport(db, targetJids, selectedLabels, {
-        forcedTargetList: forcedList,
-        roomContext: roomToScan,
-      });
+        await executeGroupExport(db, targetJids, selectedLabels, {
+          forcedTargetList: forcedList,
+        });
+      }
     } catch (error) {
       console.error(pc.red(`\n❌ Error: ${error instanceof Error ? error.message : String(error)}`));
       process.exit(1);
@@ -286,7 +307,7 @@ program
 /**
  * Room Management Commands
  */
-const roomCmd = program.command("room").alias("rooms").description("Manage wape rooms (collections of WhatsApp groups)");
+const roomCmd = program.command("rooms").alias("room").description("Manage wape rooms (collections of WhatsApp groups)");
 
 roomCmd
   .command("list", { isDefault: false })
@@ -301,9 +322,7 @@ roomCmd
   });
 
 roomCmd
-  .command("detail [id]")
-  .alias("info")
-  .alias("show")
+  .command("info [id]")
   .description("Show details of a room, including all groups and contact count in its list")
   .action(async (id?: string) => {
     try {
@@ -390,83 +409,51 @@ roomCmd
   });
 
 roomCmd
-  .command("delete <id>")
-  .description("Delete a room by ID")
-  .action((id: string) => {
-    const success = deleteRoom(id);
-    if (success) {
-      console.log(pc.green(`\n🗑️ Room '${id}' deleted successfully.\n`));
-    } else {
-      console.log(pc.yellow(`\nRoom '${id}' not found.\n`));
+  .command("delete <id> [ids...]")
+  .description("Delete one or more rooms by ID")
+  .action((id: string, extraIds?: string[]) => {
+    const allIds = [id, ...(extraIds ?? [])];
+    for (const targetId of allIds) {
+      const success = deleteRoom(targetId);
+      if (success) {
+        console.log(pc.green(`\n🗑️ Room '${targetId}' deleted successfully.`));
+      } else {
+        console.log(pc.yellow(`\nRoom '${targetId}' not found.`));
+      }
     }
+    console.log("");
   });
 
 roomCmd
-  .command("scan [id]")
-  .description("Scan all groups in a specific room")
-  .option("-l, --list <name>", "Target list file name or path")
-  .option("-g, --global", "Force export to global main list")
-  .action(async (id?: string, opts?: { list?: string; global?: boolean }) => {
-    const rooms = getRooms();
-    if (rooms.length === 0) {
-      console.log(pc.yellow("\nNo rooms configured. Use 'wape room create' first.\n"));
+  .command("scan [ids...]")
+  .description("Scan all configured rooms, or specific rooms by ID")
+  .option("--main", "Force export to global main list")
+  .option("--lock", "Force export to global lock list")
+  .action(async (ids?: string[], opts?: { main?: boolean; lock?: boolean }) => {
+    const allRooms = getRooms();
+    if (allRooms.length === 0) {
+      console.log(pc.yellow("\nNo rooms configured. Use 'wape rooms create <id>' first.\n"));
       return;
     }
 
-    let room: Room | null = null;
-    if (id) {
-      room = getRoomById(id);
-      if (!room) {
-        console.error(pc.red(`\n❌ Error: Room '${id}' not found. Use 'wape room list' to see all rooms.\n`));
-        process.exit(1);
-      }
-    } else {
-      const pickedRoomId = await select<string>({
-        message: "Select room to scan:",
-        choices: rooms.map((r) => ({
-          name: `${r.name} ${pc.dim(`[${r.id}] (${r.groupJidRowIds.length} groups)`)}`,
-          value: r.id,
-        })),
-      });
-      room = getRoomById(pickedRoomId);
-    }
-
-    if (!room) return;
-
     const { db, groups } = await loadDbAndGroups();
-    const groupMap = new Map(groups.map((g) => [g.jidRowId, g]));
-    const activeJids: number[] = [];
-    const labels: string[] = [];
-    const missingNames: string[] = [];
 
-    room.groupJidRowIds.forEach((jid, idx) => {
-      const g = groupMap.get(jid);
-      if (g) {
-        activeJids.push(jid);
-        labels.push(formatGroupLabel(g));
-      } else {
-        const name = room?.groupNames && room.groupNames[idx] ? room.groupNames[idx] : `JID ${jid}`;
-        missingNames.push(name);
+    if (!ids || ids.length === 0) {
+      console.log(pc.cyan(`\n🏠 Scanning all ${allRooms.length} configured room(s)...\n`));
+      for (const room of allRooms) {
+        await scanSingleRoom(db, groups, room, opts);
       }
-    });
-
-    if (missingNames.length > 0) {
-      console.log(
-        pc.yellow(
-          `⚠️ Note: ${missingNames.length} group(s) in room '${room.name}' are missing/exited and will be skipped during scan:`
-        )
-      );
-      missingNames.forEach((name) => console.log(`   ${pc.red("•")} ${pc.strikethrough(pc.dim(name))}`));
-      console.log("");
+      return;
     }
 
-    let forcedList = opts?.list;
-    if (opts?.global) forcedList = getMainListPath();
-
-    await executeGroupExport(db, activeJids, labels, {
-      forcedTargetList: forcedList,
-      roomContext: room,
-    });
+    for (const id of ids) {
+      const room = getRoomById(id);
+      if (!room) {
+        console.error(pc.red(`\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`));
+        continue;
+      }
+      await scanSingleRoom(db, groups, room, opts);
+    }
   });
 
 // Default `wape room` without subcommands shows help
@@ -475,24 +462,34 @@ roomCmd.action(() => {
 });
 
 /**
- * Common Contacts (Intersection) Command
+ * Pair Contacts (Intersection) Command
  */
 program
-  .command("common [target1] [target2]")
-  .alias("compare")
-  .alias("intersect")
-  .description("Find and list common contacts between two lists or rooms in XXXX XXX XXXX format")
-  .action((t1?: string, t2?: string) => {
+  .command("pair [targets...]")
+  .description("Find and list common contacts across multiple lists or rooms in XXXX XXX XXXX format")
+  .action((targets?: string[]) => {
     try {
-      const targetA = t1 ? resolveTargetToList(t1) : { label: `Main (${getMainListPath()})`, filePath: getMainListPath() };
-      const targetB = t2 ? resolveTargetToList(t2) : { label: `Lock (${getLockListPath()})`, filePath: getLockListPath() };
+      let resolvedTargets: { label: string; filePath: string }[] = [];
 
-      const commonContacts = getCommonContacts(targetA.filePath, targetB.filePath);
+      if (!targets || targets.length === 0) {
+        resolvedTargets = [
+          { label: `Main (${getMainListPath()})`, filePath: getMainListPath() },
+          { label: `Lock (${getLockListPath()})`, filePath: getLockListPath() },
+        ];
+      } else if (targets.length === 1) {
+        console.error(pc.red(`\n❌ Error: Please provide at least two targets to pair.\n`));
+        process.exit(1);
+      } else {
+        resolvedTargets = targets.map((t) => resolveTargetToList(t));
+      }
+
+      const commonContacts = getCommonContacts(resolvedTargets.map(t => t.filePath));
 
       console.log(pc.cyan(`\n🔍 Common Contacts Intersection Analysis`));
-      console.log(pc.dim(`A: ${targetA.label}`));
-      console.log(pc.dim(`B: ${targetB.label}\n`));
-      console.log(pc.bold(pc.yellow(`Found ${commonContacts.length.toLocaleString()} common contact(s):\n`)));
+      resolvedTargets.forEach((t, idx) => {
+        console.log(pc.dim(`Target ${idx + 1}: ${t.label}`));
+      });
+      console.log(pc.bold(pc.yellow(`\nFound ${commonContacts.length.toLocaleString()} common contact(s) across all targets:\n`)));
 
       for (const contact of commonContacts) {
         console.log(formatPhoneNumber(contact));
@@ -506,20 +503,18 @@ program
   });
 
 /**
- * Inventory / Union Command
+ * Stats Command
  */
 program
-  .command("inventory [targets...]")
-  .alias("stats")
-  .alias("union")
-  .description("Display inventory: global overview of all lists or detailed comparison across targets")
+  .command("stats [targets...]")
+  .description("Display stats: global overview or detailed comparison across targets")
   .action((targets?: string[]) => {
     try {
-      if (!targets || targets.length === 0 || (targets.length === 1 && targets[0].toLowerCase() === "global")) {
+      if (!targets || targets.length === 0) {
         // Global inventory across all lists
         const globalSummary = getGlobalInventory();
 
-        console.log(pc.cyan("\n📊 wape Global Lists Inventory Summary (~/.wape/lists/)\n"));
+        console.log(pc.cyan("\n📊 wape Global Lists Stats Summary (~/.wape/lists/)\n"));
         console.log("=".repeat(65));
         console.log(`${pc.bold("List Name".padEnd(35))} ${pc.bold("Contacts Count")}`);
         console.log("-".repeat(65));
@@ -536,13 +531,25 @@ program
         return;
       }
 
-      if (targets.length === 2) {
+      if (targets.length === 1 && targets[0]) {
+        // Stats for a single list
+        const target = resolveTargetToList(targets[0]);
+        const contacts = readContactsFromFile(target.filePath);
+        
+        console.log(pc.cyan("\n📊 Single List Stats\n"));
+        console.log("=".repeat(65));
+        console.log(`${pc.bold(target.label + ":")} ${pc.yellow(contacts.size.toLocaleString())} contacts`);
+        console.log("=".repeat(65) + "\n");
+        return;
+      }
+
+      if (targets.length === 2 && targets[0] && targets[1]) {
         const targetA = resolveTargetToList(targets[0]);
         const targetB = resolveTargetToList(targets[1]);
 
         const stats = getInventoryStats(targetA.filePath, targetB.filePath, targetA.label, targetB.label);
 
-        console.log(pc.cyan("\n📊 Comparative Inventory Analysis\n"));
+        console.log(pc.cyan("\n📊 Comparative Stats Analysis\n"));
         console.log("=".repeat(65));
         console.log(`${pc.bold(stats.labelA + ":")} ${pc.yellow(stats.countA.toLocaleString())}`);
         console.log(`${pc.bold(stats.labelB + ":")} ${pc.yellow(stats.countB.toLocaleString())}`);
@@ -553,8 +560,8 @@ program
         return;
       }
 
-      // Multi-target summary
-      console.log(pc.cyan(`\n📊 Multi-Target Inventory Breakdown (${targets.length} targets)\n`));
+      // Multi-target summary (>2 targets)
+      console.log(pc.cyan(`\n📊 Multi-Target Stats Breakdown (${targets.length} targets)\n`));
       console.log("=".repeat(65));
       const combinedUnion = new Set<string>();
 
@@ -575,13 +582,36 @@ program
       process.exit(1);
     }
   });
+/**
+ * Print Command
+ */
+program
+  .command("print <target>")
+  .description("Print all phone numbers in a room or list in XXXX XXX XXXX format")
+  .action((target: string) => {
+    try {
+      const resolved = resolveTargetToList(target);
+      const contacts = readContactsFromFile(resolved.filePath);
+
+      if (contacts.size === 0) {
+        console.log(pc.yellow(`\nNo contacts found in ${resolved.label}.\n`));
+        return;
+      }
+
+      for (const contact of contacts) {
+        console.log(formatPhoneNumber(contact));
+      }
+    } catch (error) {
+      console.error(pc.red(`\n❌ Error: ${error instanceof Error ? error.message : String(error)}`));
+      process.exit(1);
+    }
+  });
 
 /**
  * Lists overview
  */
 program
   .command("lists")
-  .alias("list")
   .description("List all known contact files in ~/.wape/lists/ and their current contact counts")
   .action(() => {
     const knownLists = getAllKnownLists();

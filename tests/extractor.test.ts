@@ -1,8 +1,7 @@
-process.env.WAPE_HOME = "/tmp/test_wape_sandbox";
-process.env.WHATSAPP_BACKUP_PATH = "dummy.crypt15";
-process.env.WHATSAPP_BACKUP_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-process.env.MAIN_FILE_PATH = "test_main.txt";
-process.env.LOCK_FILE_PATH = "test_lock.txt";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+process.env.WAPE_HOME = join(tmpdir(), "test_wape_sandbox");
 
 import { describe, expect, it } from "bun:test";
 import { formatPhoneNumber, normalizeNigerianPhoneNumber } from "../src/services/phone";
@@ -14,7 +13,6 @@ import {
   writeContactsToFile,
 } from "../src/services/file-manager";
 import { isSqliteDatabase } from "../src/services/decryptor";
-import { resolveCommunityName } from "../src/services/extractor";
 import { unlinkSync, existsSync, writeFileSync } from "node:fs";
 
 describe("Nigerian Phone Parser & Formatter", () => {
@@ -80,7 +78,7 @@ describe("File Manager Contact Operations", () => {
     writeContactsToFile(testFileA, new Set(["08011111111", "08022222222", "08033333333"]));
     writeContactsToFile(testFileB, new Set(["08022222222", "08033333333", "08044444444", "08055555555"]));
 
-    const common = getCommonContacts(testFileA, testFileB);
+    const common = getCommonContacts([testFileA, testFileB]);
     expect(common).toEqual(["08022222222", "08033333333"]);
 
     const stats = getInventoryStats(testFileA, testFileB);
@@ -109,7 +107,7 @@ describe("File Manager Contact Operations", () => {
 
 describe("Room Store and Management", () => {
   it("saves, retrieves, renames, and deletes rooms properly", async () => {
-    const { saveRoom, getRooms, getRoomById, renameRoomId, deleteRoom, resolveListFilePath } = await import(
+    const { saveRoom, getRoomById, renameRoomId, deleteRoom, resolveListFilePath } = await import(
       "../src/services/wape-store"
     );
     const { writeFileSync, existsSync, unlinkSync } = await import("node:fs");
@@ -151,7 +149,7 @@ describe("Room Store and Management", () => {
 
   it("saves and loads app config in WAPE_HOME config.json", async () => {
     const originalHome = process.env.WAPE_HOME;
-    const testWapeDir = "/tmp/test_wape_" + Date.now();
+    const testWapeDir = join(tmpdir(), "test_wape_" + Date.now());
     process.env.WAPE_HOME = testWapeDir;
 
     const { saveAppConfig, getAppConfig } = await import("../src/services/wape-store");

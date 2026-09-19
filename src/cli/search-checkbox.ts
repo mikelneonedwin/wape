@@ -6,13 +6,11 @@ import {
   isSpaceKey,
   isUpKey,
   makeTheme,
-  Separator,
   useKeypress,
   useMemo,
   usePagination,
   usePrefix,
   useState,
-  ValidationError,
   type Theme,
 } from "@inquirer/core";
 import { cursorHide } from "@inquirer/ansi";
@@ -67,12 +65,6 @@ export const searchCheckbox = createPrompt(
         checked: checkedSet.has(choice.value),
       }));
     }, [searchTerm, checkedSet, config.choices]);
-
-    const bounds = useMemo(() => {
-      const first = filteredChoices.findIndex((c) => !c.disabled);
-      const last = filteredChoices.findLastIndex((c) => !c.disabled);
-      return { first: first === -1 ? 0 : first, last: last === -1 ? 0 : last };
-    }, [filteredChoices]);
 
     const [active, setActive] = useState(0);
 
@@ -164,10 +156,13 @@ export const searchCheckbox = createPrompt(
           setSearchTerm(searchTerm.slice(0, -1));
           setActive(0);
         }
-      } else if (!key.ctrl && !key.meta && key.name !== "tab" && key.name !== "escape" && key.sequence) {
-        // Printable character typed - treat as real-time search filtering
-        if (key.sequence.length === 1 && key.sequence >= " ") {
-          setSearchTerm(searchTerm + key.sequence);
+      } else if (!key.ctrl && key.name !== "tab" && key.name !== "escape") {
+        const char =
+          "sequence" in key && typeof key.sequence === "string"
+            ? key.sequence
+            : (key.name?.length === 1 ? key.name : "");
+        if (char && char.length === 1 && char >= " ") {
+          setSearchTerm(searchTerm + char);
           setActive(0);
         }
       }

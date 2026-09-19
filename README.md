@@ -1,29 +1,50 @@
 # wape - WhatsApp Phone Extractor, Room Manager & List Aggregator
 
-A TypeScript CLI toolkit built with **Bun** and **Drizzle ORM** for decrypting WhatsApp `.crypt15` backup databases, organizing WhatsApp groups into persistent **Rooms** in `~/.wape`, extracting unique Nigerian phone numbers, and managing multi-list and room-level inventory comparisons.
+A TypeScript CLI toolkit for decrypting WhatsApp backup databases, organizing WhatsApp groups into persistent **Rooms** in `~/.wape`, extracting unique Nigerian phone numbers, and managing multi-list and room-level comparisons.
+
+> Note: `wape` uses [`wa-crypt-tools`](https://github.com/ElDavoo/wa-crypt-tools) under the hood and supports various WhatsApp backup versions (e.g. `.crypt12`, `.crypt14`, `.crypt15`), essentially any variant that can be cracked provided you supply the correct 64-character hex decryption key.
 
 ---
 
 ## 🚀 Setup & Installation
 
-1. **Install dependencies**:
-   ```bash
-   bun install
-   ```
+This toolkit requires a JavaScript/TypeScript package manager (Bun, pnpm, or npm) and Python 3 (for decryption).
 
-2. **Configure Decryption Key**:
-   Configure your 64-character WhatsApp decryption key (stored in `~/.wape/config.json`):
-   ```bash
-   bun run wape config set --key <your-64-char-hex-key>
-   ```
+### 1. Clone and Install Dependencies
+```bash
+git clone https://github.com/mikelneonedwin/wape.git
+cd wape
+bun install   # or: npm install / pnpm install
+```
 
-3. **Backup Auto-Discovery**:
-   `wape` automatically detects backup databases matching `msgstore*.db*.crypt*` across `~/Downloads`, `~`, and `~/.wape`. If multiple backups are present, `wape` prompts you to choose which one to use.
-   
-   To set an explicit backup path:
-   ```bash
-   bun run wape config set --backup /path/to/msgstore.db.crypt15
-   ```
+### 2. Setup Python Virtual Environment
+`wape` expects a Python virtual environment at `.venv` containing `wa-crypt-tools`:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install wa-crypt-tools
+```
+
+### 3. Link Globally (Optional but Recommended)
+Link `wape` to your global path to use the `wape` command anywhere in your terminal:
+```bash
+bun link      # or: npm link / pnpm link
+```
+*(If you prefer not to link globally, you can prefix any command with `bun run wape <command>` or `bun run <command>`)*.
+
+### 4. Configure Decryption Key
+Provide your 64-character WhatsApp decryption key (stored in `~/.wape/config.json`):
+```bash
+wape config set --key <your-64-char-hex-key>
+```
+
+### 5. Backup Auto-Discovery
+`wape` automatically detects backup databases matching `msgstore*.db*.crypt*` across `~/Downloads`, `~`, and `~/.wape`. If multiple backups are present, `wape` prompts you to choose which one to use.
+
+To bypass auto-discovery and set an explicit path:
+```bash
+wape config set --backup /path/to/msgstore.db.crypt15
+```
 
 ---
 
@@ -34,39 +55,42 @@ Manage settings stored in `~/.wape/config.json`.
 
 ```bash
 # View active configuration
-bun run wape config get
+wape config get
 
 # Set decryption key or custom backup path
-bun run wape config set --key <64-hex-key>
-bun run wape config set --backup <path>
+wape config set --key <64-hex-key>
+wape config set --backup <path>
 ```
 
 ---
 
-### 2. Room Management (`wape room`)
+### 2. Room Management (`wape rooms`)
 Rooms group related WhatsApp chats into persistent bundles stored in `~/.wape/rooms.json`. Each room automatically maps to its dedicated contact list file (`~/.wape/lists/<id>.txt`).
 
 ```bash
 # List all configured rooms with group and contact stats
-bun run wape room list
+wape rooms list
 
-# Create a new room with an explicit ID (aliases: new, add)
-bun run wape room create <id>
+# Create a new room with an explicit ID
+wape rooms create <id>
 
-# View room details, included groups, and exited/missing status (aliases: info, show)
-bun run wape room detail [id]
+# View room details, included groups, and exited/missing status
+wape rooms info [id]
 
 # Edit groups within a room
-bun run wape room edit [id]
+wape rooms edit [id]
 
-# Rename a room ID and migrate its contact list file (aliases: reid, mv)
-bun run wape room rename <oldId> <newId>
+# Rename a room ID and migrate its contact list file
+wape rooms rename <oldId> <newId>
 
-# Delete a room by ID
-bun run wape room delete <id>
+# Delete one or more rooms by ID
+wape rooms delete <id> [id2...]
 
-# Scan all groups inside a room
-bun run wape room scan [id]
+# Scan ALL configured rooms (or pass specific room IDs)
+wape rooms scan
+wape rooms scan <id> [id2...]
+wape rooms scan --main
+wape rooms scan --lock
 ```
 
 ---
@@ -76,54 +100,68 @@ Extracts and sieves unique Nigerian phone numbers from selected groups or config
 
 ```bash
 # Interactive scan (choose from a configured room or pick ad-hoc groups)
-bun run scan
+wape scan
 
-# Scan directly from a room by ID
-bun run scan <room-id>
+# Scan directly from a room by ID (saves to ~/.wape/lists/<room-id>.txt)
+wape scan <room-id>
 
-# Scan and force output to a specific list file in ~/.wape/lists/
-bun run scan <room-id> --list leads.txt
-
-# Scan and force output to the global main list (~/.wape/lists/main.txt)
-bun run scan <room-id> --global
+# Scan and force output to the global main or lock list (~/.wape/lists/main.txt or lock.txt)
+wape scan <room-id> --main
+wape scan <room-id> --lock
 ```
 
 ---
 
-### 4. Common Contacts Finder (Intersection) (`wape common`)
-Finds contacts present in both target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting.
+### 4. Pair Contacts (Intersection) (`wape pair`)
+Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can pair across 2 or more lists simultaneously.
 
 ```bash
-# Compare global main.txt and lock.txt (default)
-bun run common
+# Compare global main.txt and lock.txt (default if no targets provided)
+wape pair
 
-# Compare two specific lists or rooms
-bun run common <room1_id|list1> <room2_id|list2>
+# Compare two or more specific lists or rooms
+wape pair <target1> <target2> [target3...]
 ```
 
 ---
 
-### 5. Inventory & Union Breakdown (`wape inventory`)
-Computes aggregated inventory totals across lists and rooms:
+### 5. Stats & Union Breakdown (`wape stats`)
+Computes aggregated stats totals across lists and rooms:
+- **0 arguments**: Global overview of all lists in `~/.wape/lists/` and grand unique union.
+- **1 argument**: Contact count and stats for that specific list or room.
+- **2 arguments**: Comparative analysis (totals, overlap, and union).
+- **>2 arguments**: Aggregates all targets into a combined unique total.
 
 ```bash
-# Global inventory: displays individual totals for every list in ~/.wape/lists/ and the grand unique union
-bun run inventory global
+# Global overview of all lists and grand unique union
+wape stats
 
-# Comparative inventory: compares two specific lists or rooms (totals, overlap, union)
-bun run inventory <target1> <target2>
+# Stats for a single specific list or room
+wape stats <target>
 
-# Multi-target inventory: aggregates multiple lists or rooms into a combined unique total
-bun run inventory <target1> <target2> <target3>
+# Comparative stats (compares totals, overlap, and union for two lists)
+wape stats <target1> <target2>
+
+# Multi-target stats (aggregates multiple lists or rooms into a combined unique total)
+wape stats <target1> <target2> <target3>
 ```
 
 ---
 
-### 6. Contact Lists Repository (`wape lists`)
+### 6. Print Contacts (`wape print`)
+Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
+
+```bash
+wape print <target>
+```
+
+---
+
+### 7. Contact Lists Repository (`wape lists`)
 Shows all contact list files currently managed in `~/.wape/lists/` and their contact counts.
 
 ```bash
-bun run lists
+wape lists
 ```
 
 ---

@@ -7,23 +7,32 @@
     "wape": "./src/cli/index.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^7"
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "latest",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "lefthook": "^2.1.14",
+    "prettier": "^3.9.8",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.70.0"
   },
   "scripts": {
     "wape": "bun run src/cli/index.ts",
     "scan": "bun run src/cli/index.ts scan",
-    "room": "bun run src/cli/index.ts room",
-    "rooms": "bun run src/cli/index.ts room",
-    "common": "bun run src/cli/index.ts common",
-    "inventory": "bun run src/cli/index.ts inventory",
-    "lists": "bun run src/cli/index.ts lists"
+    "rooms": "bun run src/cli/index.ts rooms",
+    "pair": "bun run src/cli/index.ts pair",
+    "print": "bun run src/cli/index.ts print",
+    "stats": "bun run src/cli/index.ts stats",
+    "lists": "bun run src/cli/index.ts lists",
+    "lint": "eslint --fix",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepare": "lefthook install"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.7.2",
-    "@t3-oss/env-core": "^0.13.11",
     "commander": "^15.0.0",
     "drizzle-orm": "^0.45.2",
     "picocolors": "^1.1.1",

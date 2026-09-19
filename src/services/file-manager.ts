@@ -59,18 +59,27 @@ export function mergeContactsIntoFile(filePath: string, newContacts: Set<string>
   };
 }
 
-export function getCommonContacts(fileAPath: string, fileBPath: string): string[] {
-  const setA = readContactsFromFile(fileAPath);
-  const setB = readContactsFromFile(fileBPath);
-
-  const common: string[] = [];
-  for (const item of setA) {
-    if (setB.has(item)) {
-      common.push(item);
+export function getCommonContacts(filePaths: string[]): string[] {
+  if (filePaths.length === 0 || !filePaths[0]) return [];
+  
+  // Start with the first set
+  let common = readContactsFromFile(filePaths[0]);
+  
+  // Intersect with remaining sets
+  for (let i = 1; i < filePaths.length; i++) {
+    const path = filePaths[i];
+    if (!path) continue;
+    const currentSet = readContactsFromFile(path);
+    const intersection = new Set<string>();
+    for (const item of common) {
+      if (currentSet.has(item)) {
+        intersection.add(item);
+      }
     }
+    common = intersection;
   }
 
-  return common.sort();
+  return Array.from(common).sort();
 }
 
 export interface InventoryStats {

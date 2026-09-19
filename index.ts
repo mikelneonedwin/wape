@@ -1,4 +1,3 @@
-export * from "./src/env";
 export * from "./src/db";
 export * from "./src/services/decryptor";
 export * from "./src/services/extractor";

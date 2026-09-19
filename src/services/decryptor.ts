@@ -1,4 +1,5 @@
 import { input, select } from "@inquirer/prompts";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, openSync, readSync, closeSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -49,10 +50,14 @@ export function discoverMsgstoreBackups(): string[] {
             if (stats.isFile() && stats.size > 0 && !discoveredMap.has(fullPath)) {
               discoveredMap.set(fullPath, fullPath);
             }
-          } catch {}
+          } catch (_err) {
+            // Ignore unreadable candidate file
+          }
         }
       }
-    } catch {}
+    } catch (_err) {
+      // Ignore unreadable directory
+    }
   }
 
   return Array.from(discoveredMap.values());
@@ -63,7 +68,7 @@ export function discoverMsgstoreBackups(): string[] {
  */
 export function discoverMsgstoreBackup(): string | null {
   const all = discoverMsgstoreBackups();
-  return all.length > 0 ? all[0] : null;
+  return all.length > 0 ? (all[0] ?? null) : null;
 }
 
 /**
@@ -73,7 +78,7 @@ export async function resolveBackupCredentials(options?: {
   backupPath?: string;
   backupKey?: string;
 }): Promise<{ backupPath: string; backupKey?: string }> {
-  let appConfig = getAppConfig();
+  const appConfig = getAppConfig();
 
   // 1. Resolve Backup Path
   let backupPath = options?.backupPath ?? appConfig.backupPath;
@@ -111,7 +116,7 @@ export async function resolveBackupCredentials(options?: {
   }
 
   // 2. Resolve Decryption Key
-  const backupKey = options?.backupKey ?? appConfig.key ?? process.env.WHATSAPP_BACKUP_KEY;
+  const backupKey = options?.backupKey ?? appConfig.key;
 
   return {
     backupPath: resolve(backupPath),
@@ -173,34 +178,83 @@ export async function ensureDecryptedDatabase(options?: {
     return outputPath;
   }
 
-  const venvPython = resolve("/home/winner/workspace/wa-extractor/.venv/bin/python3");
-  const venvWadecrypt = resolve("/home/winner/workspace/wa-extractor/.venv/bin/wadecrypt");
+  const projectRoot = resolve(import.meta.dir, "../../");
+  const candidateWadecrypt = [
+    resolve(projectRoot, ".venv/bin/wadecrypt"),
+    resolve(projectRoot, ".venv/Scripts/wadecrypt.exe"),
+    resolve(projectRoot, ".venv/Scripts/wadecrypt"),
+  ];
+  const candidatePython = [
+    resolve(projectRoot, ".venv/bin/python3"),
+    resolve(projectRoot, ".venv/bin/python"),
+    resolve(projectRoot, ".venv/Scripts/python.exe"),
+    resolve(projectRoot, ".venv/Scripts/python"),
+  ];
 
-  let proc;
-  if (existsSync(venvWadecrypt)) {
-    proc = Bun.spawn([venvWadecrypt, key, backupPath, outputPath], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-  } else if (existsSync(venvPython)) {
-    proc = Bun.spawn([venvPython, "-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-  } else {
-    // Fallback to global wadecrypt / python
-    proc = Bun.spawn(["wadecrypt", key, backupPath, outputPath], {
-      stdout: "pipe",
-      stderr: "pipe",
+  const foundWadecrypt = candidateWadecrypt.find((p) => existsSync(p));
+  const foundPython = candidatePython.find((p) => existsSync(p));
+
+  function runProcess(cmd: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    return new Promise((res) => {
+      const child = spawn(cmd, args);
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout?.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      child.stderr?.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      child.on("close", (code) => {
+        res({ exitCode: code ?? 0, stdout, stderr });
+      });
+
+      child.on("error", (err) => {
+        res({ exitCode: 1, stdout, stderr: err.message });
+      });
     });
   }
 
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
-    const stdout = await new Response(proc.stdout).text();
+  let result: { exitCode: number; stdout: string; stderr: string } | null = null;
+
+  if (foundWadecrypt) {
+    result = await runProcess(foundWadecrypt, [key, backupPath, outputPath]);
+  } else if (foundPython) {
+    result = await runProcess(foundPython, ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]);
+  } else {
+    // Fallback to global wadecrypt / python3 / python / py
+    const globalCommands: [string, string[]][] = [
+      ["wadecrypt", [key, backupPath, outputPath]],
+      ["python3", ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]],
+      ["python", ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]],
+      ["py", ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]],
+    ];
+
+    let lastError: unknown;
+    for (const [cmd, args] of globalCommands) {
+      try {
+        result = await runProcess(cmd, args);
+        if (result.exitCode === 0) {
+          break;
+        }
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!result) {
+      throw new Error(
+        `Failed to find or execute wadecrypt / python. Ensure python and wa-crypt-tools are installed in .venv or on your PATH: ${String(lastError)}`
+      );
+    }
+  }
+
+  if (result.exitCode !== 0) {
     throw new Error(
-      `Decryption failed with exit code ${exitCode}.\nStdout: ${stdout}\nStderr: ${stderr}`
+      `Decryption failed with exit code ${result.exitCode}.\nStdout: ${result.stdout}\nStderr: ${result.stderr}`
     );
   }
 

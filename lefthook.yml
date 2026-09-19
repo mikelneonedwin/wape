@@ -1,0 +1,27 @@
+# EXAMPLE USAGE:
+#
+#   Refer for explanation to following link:
+#   https://lefthook.dev/configuration/
+#
+pre-push:
+  jobs:
+    - name: "test"
+      run: bun test
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: "lint"
+      run: bunx eslint --fix --no-warn-ignored {staged_files}
+      glob: "*.{js,ts,jsx,tsx}"
+
+    - name: "format"
+      run: bunx prettier --write --log-level silent {staged_files}
+      glob: "*.{js,ts,jsx,tsx,json,yml,md}"
+
+    - name: "typecheck"
+      run: bunx tsc --noEmit
+      glob: "*.{js,ts,jsx,tsx}"
+
+    - name: "test"
+      run: bun test
