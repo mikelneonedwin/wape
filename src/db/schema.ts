@@ -26,6 +26,13 @@ export const chats = sqliteTable("chat", {
   archived: integer("archived"),
 });
 
+export const messages = sqliteTable("message", {
+  id: integer("_id").primaryKey({ autoIncrement: true }),
+  chatRowId: integer("chat_row_id").notNull(),
+  textData: text("text_data"),
+  timestamp: integer("timestamp"),
+});
+
 export const groupParticipantUsers = sqliteTable("group_participant_user", {
   id: integer("_id").primaryKey({ autoIncrement: true }),
   groupJidRowId: integer("group_jid_row_id").notNull(),
@@ -34,6 +41,17 @@ export const groupParticipantUsers = sqliteTable("group_participant_user", {
   pending: integer("pending"),
   addTimestamp: integer("add_timestamp"),
 });
+
+export const messageSystemWithGroupNodes = sqliteTable(
+  "message_system_with_group_nodes",
+  {
+    messageRowId: integer("message_row_id").primaryKey(),
+    groupJidRowId: integer("group_jid_row_id"),
+    groupNodeType: integer("group_node_type"),
+    groupSubject: text("group_subject"),
+    version: integer("version"),
+  },
+);
 
 export const jidRelations = relations(jids, ({ one, many }) => ({
   chat: one(chats, {
@@ -77,19 +95,22 @@ export const chatRelations = relations(chats, ({ one, many }) => ({
   participants: many(groupParticipantUsers),
 }));
 
-export const groupParticipantUserRelations = relations(groupParticipantUsers, ({ one }) => ({
-  groupChat: one(chats, {
-    fields: [groupParticipantUsers.groupJidRowId],
-    references: [chats.jidRowId],
+export const groupParticipantUserRelations = relations(
+  groupParticipantUsers,
+  ({ one }) => ({
+    groupChat: one(chats, {
+      fields: [groupParticipantUsers.groupJidRowId],
+      references: [chats.jidRowId],
+    }),
+    groupJid: one(jids, {
+      fields: [groupParticipantUsers.groupJidRowId],
+      references: [jids.id],
+      relationName: "participantGroupJid",
+    }),
+    userJid: one(jids, {
+      fields: [groupParticipantUsers.userJidRowId],
+      references: [jids.id],
+      relationName: "participantUserJid",
+    }),
   }),
-  groupJid: one(jids, {
-    fields: [groupParticipantUsers.groupJidRowId],
-    references: [jids.id],
-    relationName: "participantGroupJid",
-  }),
-  userJid: one(jids, {
-    fields: [groupParticipantUsers.userJidRowId],
-    references: [jids.id],
-    relationName: "participantUserJid",
-  }),
-}));
+);

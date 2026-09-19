@@ -104,6 +104,10 @@ wape rooms rename <oldId> <newId>
 # Delete one or more rooms by ID
 wape rooms delete <id> [id2...]
 
+# Compare contact lists across rooms (defaults to all configured rooms)
+wape rooms compare
+wape rooms compare <id1> <id2> [id3...]
+
 # Scan ALL configured rooms (or pass specific room IDs)
 wape rooms scan
 wape rooms scan <id> [id2...]
@@ -131,16 +135,16 @@ wape scan <room-id> --lock
 
 ---
 
-### 4. Pair Contacts (Intersection) (`wape pair`)
+### 4. Compare Contacts (Intersection) (`wape compare`)
 
-Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can pair across 2 or more lists simultaneously.
+Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more lists simultaneously.
 
 ```bash
 # Compare global main.txt and lock.txt (default if no targets provided)
-wape pair
+wape compare
 
 # Compare two or more specific lists or rooms
-wape pair <target1> <target2> [target3...]
+wape compare <target1> <target2> [target3...]
 ```
 
 ---
@@ -207,8 +211,19 @@ wape lists
 
 ---
 
+### 9. WhatsApp Group Links Extractor (`wape links`)
+
+Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `~/.wape/links.json`, presents new links in an alphabetical checklist to pick, records the chosen links into `~/.wape/links.json`, and prints them one per line to the terminal.
+
+```bash
+wape links
+```
+
+---
+
 ## 📁 Storage Architecture (`~/.wape`)
 
 - **`~/.wape/config.json`**: Global configuration (decryption key and optional backup path).
 - **`~/.wape/rooms.json`**: Persistent storage for room definitions and group mappings.
+- **`~/.wape/links.json`**: Persistent storage for recorded WhatsApp group invite links.
 - **`~/.wape/lists/`**: Default repository for custom, global (`main.txt`, `lock.txt`), and room-level (`<id>.txt`) contact list files.

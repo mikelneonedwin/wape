@@ -199,4 +199,139 @@ describe("Room Store and Management", () => {
       rmSync(testWapeDir, { recursive: true, force: true });
     process.env.WAPE_HOME = originalHome;
   });
+
+  it("saves, retrieves, and deduplicates WhatsApp group links in links.json", async () => {
+    const { saveLinks, getSavedLinks, getSavedLinksFile } =
+      await import("../src/services/wape-store");
+    const { unlinkSync, existsSync } = await import("node:fs");
+
+    const linksFile = getSavedLinksFile();
+    if (existsSync(linksFile)) unlinkSync(linksFile);
+
+    const res1 = saveLinks([
+      "https://chat.whatsapp.com/DEF456",
+      "https://chat.whatsapp.com/ABC123",
+    ]);
+    expect(res1.addedCount).toBe(2);
+    expect(res1.totalCount).toBe(2);
+
+    // Second save with duplicate and 1 new
+    const res2 = saveLinks([
+      "https://chat.whatsapp.com/ABC123",
+      "https://chat.whatsapp.com/GHI789",
+    ]);
+    expect(res2.addedCount).toBe(1);
+    expect(res2.totalCount).toBe(3);
+
+    const links = getSavedLinks();
+    expect(links).toEqual([
+      "https://chat.whatsapp.com/ABC123",
+      "https://chat.whatsapp.com/DEF456",
+      "https://chat.whatsapp.com/GHI789",
+    ]);
+
+    if (existsSync(linksFile)) unlinkSync(linksFile);
+  });
+});
+
+describe("WhatsApp Group Link Extractor", () => {
+  it("normalizes and strips search params from whatsapp group invite links", async () => {
+    const { normalizeWhatsAppGroupLink } =
+      await import("../src/services/extractor");
+    expect(
+      normalizeWhatsAppGroupLink(
+        "https://chat.whatsapp.com/Cgh2VBRsPVLAUlAVpnkOjU?s=cl&p=a&mlu=4",
+      ),
+    ).toBe("https://chat.whatsapp.com/Cgh2VBRsPVLAUlAVpnkOjU");
+    expect(
+      normalizeWhatsAppGroupLink("chat.whatsapp.com/BlwHjpJmY9yI9wUA8pXXll"),
+    ).toBe("https://chat.whatsapp.com/BlwHjpJmY9yI9wUA8pXXll");
+    expect(
+      normalizeWhatsAppGroupLink(
+        "https://chat.whatsapp.com/DQdObCaowLG1vHHHF7Rz3N?mode=gi_t",
+      ),
+    ).toBe("https://chat.whatsapp.com/DQdObCaowLG1vHHHF7Rz3N");
+  });
+});
+
+describe("Group and Community Extractor", () => {
+  it("correctly resolves standalone groups, direct node parent links, and containment communities", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { fetchAllGroups } = await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT NOT NULL, server TEXT NOT NULL, agent INTEGER, device INTEGER, type INTEGER, raw_string TEXT);
+      CREATE TABLE jid_map (lid_row_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, sort_id INTEGER);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER UNIQUE, subject TEXT, group_type INTEGER, hidden INTEGER, archived INTEGER);
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER NOT NULL, text_data TEXT, timestamp INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER, pending INTEGER, add_timestamp INTEGER);
+      CREATE TABLE message_system_with_group_nodes (message_row_id INTEGER PRIMARY KEY, group_jid_row_id INTEGER, group_node_type INTEGER, group_subject TEXT, version INTEGER);
+    `);
+
+    // Insert Community parent (type 1) and announcement (type 3)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (1, 100, 'Tech Community', 1)`,
+    );
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (2, 101, 'Tech Community Announcements', 3)`,
+    );
+
+    // Insert Subgroup A (type 2) which has members belonging to Tech Community Announcements
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (3, 200, 'Frontend Devs', 2)`,
+    );
+
+    // Insert Subgroup B (type 2) linked via message_system_with_group_nodes
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (4, 300, 'Backend Devs', 2)`,
+    );
+    sqlite.run(`INSERT INTO message (_id, chat_row_id) VALUES (10, 4)`);
+    sqlite.run(
+      `INSERT INTO message_system_with_group_nodes (message_row_id, group_jid_row_id, group_subject) VALUES (10, 100, 'Tech Community')`,
+    );
+
+    // Insert Standalone group (type 0)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (5, 400, 'Family Group', 0)`,
+    );
+
+    // Add participants:
+    // Tech Community has user 1
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (100, 1)`,
+    );
+    // Tech Community Announcements has users 1, 2, 3, 4
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (101, 1), (101, 2), (101, 3), (101, 4)`,
+    );
+    // Frontend Devs has users 1, 2, 3 (all 3 in Tech Community -> 100% overlap)
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (200, 1), (200, 2), (200, 3)`,
+    );
+    // Backend Devs has user 4
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (300, 4)`,
+    );
+    // Family Group has users 5, 6
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (400, 5), (400, 6)`,
+    );
+
+    const db = drizzle({ client: sqlite, schema });
+    const groups = await fetchAllGroups(db);
+
+    expect(groups.length).toBe(5);
+
+    const frontend = groups.find((g) => g.subject === "Frontend Devs");
+    expect(frontend?.communityName).toBe("Tech Community Announcements");
+
+    const backend = groups.find((g) => g.subject === "Backend Devs");
+    expect(backend?.communityName).toBe("Tech Community");
+
+    const family = groups.find((g) => g.subject === "Family Group");
+    expect(family?.communityName).toBeNull();
+  });
 });

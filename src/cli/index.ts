@@ -8,6 +8,7 @@ import { getDatabase } from "../db";
 import { ensureDecryptedDatabase } from "../services/decryptor";
 import {
   extractNigerianNumbersFromGroups,
+  extractWhatsAppGroupLinks,
   fetchAllGroups,
 } from "../services/extractor";
 import {
@@ -34,9 +35,11 @@ import {
   getMainListPath,
   getRoomById,
   getRooms,
+  getSavedLinks,
   renameRoomId,
   resolveListFilePath,
   saveAppConfig,
+  saveLinks,
   type Room,
 } from "../services/wape-store";
 
@@ -688,16 +691,109 @@ roomCmd
     }
   });
 
+function executeCompare(
+  targets: { label: string; filePath: string }[],
+  title = "Common Contacts Intersection Analysis",
+) {
+  const commonContacts = getCommonContacts(targets.map((t) => t.filePath));
+
+  console.log(pc.cyan(`\n🔍 ${title}`));
+  targets.forEach((t, idx) => {
+    console.log(pc.dim(`Target ${idx + 1}: ${t.label}`));
+  });
+  console.log(
+    pc.bold(
+      pc.yellow(
+        `\nFound ${commonContacts.length.toLocaleString()} common contact(s) across all targets:\n`,
+      ),
+    ),
+  );
+
+  for (const contact of commonContacts) {
+    console.log(formatPhoneNumber(contact));
+  }
+
+  console.log(
+    pc.bold(
+      pc.green(
+        `\nTotal Common Contacts: ${commonContacts.length.toLocaleString()}\n`,
+      ),
+    ),
+  );
+}
+
+roomCmd
+  .command("compare [rooms...]")
+  .description(
+    "Find and list common contacts across rooms in XXXX XXX XXXX format",
+  )
+  .action((roomIds?: string[]) => {
+    try {
+      const allRooms = getRooms();
+      let targetRooms: Room[] = [];
+
+      if (!roomIds || roomIds.length === 0) {
+        if (allRooms.length < 2) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Please provide at least two rooms to compare (or configure at least 2 rooms).\n`,
+            ),
+          );
+          process.exit(1);
+        }
+        targetRooms = allRooms;
+      } else if (roomIds.length === 1) {
+        console.error(
+          pc.red(`\n❌ Error: Please provide at least two rooms to compare.\n`),
+        );
+        process.exit(1);
+      } else {
+        for (const id of roomIds) {
+          const r = getRoomById(id);
+          if (!r) {
+            console.error(
+              pc.red(
+                `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+              ),
+            );
+            process.exit(1);
+          }
+          targetRooms.push(r);
+        }
+      }
+
+      const resolvedTargets = targetRooms.map((r) => {
+        const filePath = resolveListFilePath(r.targetList ?? `${r.id}.txt`);
+        return {
+          label: `Room '${r.id}' (${filePath})`,
+          filePath,
+        };
+      });
+
+      executeCompare(
+        resolvedTargets,
+        "Rooms Common Contacts Intersection Analysis",
+      );
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
 // Default `wape rooms` without subcommands shows help
 roomCmd.action(() => {
   roomCmd.outputHelp();
 });
 
 /**
- * Pair Contacts (Intersection) Command
+ * Compare Contacts (Intersection) Command
  */
 program
-  .command("pair [targets...]")
+  .command("compare [targets...]")
   .description(
     "Find and list common contacts across multiple lists or rooms in XXXX XXX XXXX format",
   )
@@ -712,40 +808,16 @@ program
         ];
       } else if (targets.length === 1) {
         console.error(
-          pc.red(`\n❌ Error: Please provide at least two targets to pair.\n`),
+          pc.red(
+            `\n❌ Error: Please provide at least two targets to compare.\n`,
+          ),
         );
         process.exit(1);
       } else {
         resolvedTargets = targets.map((t) => resolveTargetToList(t));
       }
 
-      const commonContacts = getCommonContacts(
-        resolvedTargets.map((t) => t.filePath),
-      );
-
-      console.log(pc.cyan(`\n🔍 Common Contacts Intersection Analysis`));
-      resolvedTargets.forEach((t, idx) => {
-        console.log(pc.dim(`Target ${idx + 1}: ${t.label}`));
-      });
-      console.log(
-        pc.bold(
-          pc.yellow(
-            `\nFound ${commonContacts.length.toLocaleString()} common contact(s) across all targets:\n`,
-          ),
-        ),
-      );
-
-      for (const contact of commonContacts) {
-        console.log(formatPhoneNumber(contact));
-      }
-
-      console.log(
-        pc.bold(
-          pc.green(
-            `\nTotal Common Contacts: ${commonContacts.length.toLocaleString()}\n`,
-          ),
-        ),
-      );
+      executeCompare(resolvedTargets, "Common Contacts Intersection Analysis");
     } catch (error) {
       console.error(
         pc.red(
@@ -1018,6 +1090,77 @@ program
 
       for (const contact of contacts) {
         console.log(formatPhoneNumber(contact));
+      }
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+/**
+ * Links Command
+ */
+program
+  .command("links")
+  .description(
+    "Extract all WhatsApp group invite links from all chats, pick links, record them to ~/.wape/links.json, and print them",
+  )
+  .action(async () => {
+    try {
+      const { db } = await loadDbAndGroups();
+      const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+
+      if (allExtractedLinks.length === 0) {
+        console.log(
+          pc.yellow("\nNo WhatsApp group invite links found in backup.\n"),
+        );
+        return;
+      }
+
+      const recordedLinks = new Set(getSavedLinks());
+      const availableLinks = allExtractedLinks.filter(
+        (link) => !recordedLinks.has(link),
+      );
+
+      if (availableLinks.length === 0) {
+        console.log(
+          pc.green(
+            `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ~/.wape/links.json.\n`,
+          ),
+        );
+        return;
+      }
+
+      console.log(
+        pc.cyan(
+          `\n🔗 WhatsApp Group Invite Links (${availableLinks.length} new available / ${allExtractedLinks.length} total in backup):\n`,
+        ),
+      );
+
+      const selectedLinks = await searchCheckbox({
+        message:
+          "Select WhatsApp group links to record & output (Space to check, Enter to submit):",
+        pageSize: 18,
+        choices: availableLinks.map((link) => ({
+          name: link,
+          value: link,
+        })),
+      });
+
+      if (selectedLinks.length === 0) {
+        console.log(pc.yellow("\nNo links were selected.\n"));
+        return;
+      }
+
+      saveLinks(selectedLinks);
+
+      // Print picked links strictly one per line to terminal
+      for (const link of selectedLinks) {
+        console.log(link);
       }
     } catch (error) {
       console.error(

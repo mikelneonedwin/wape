@@ -295,3 +295,56 @@ export function getAllKnownLists(): {
 
   return Array.from(listsMap.values());
 }
+
+/**
+ * Links file (~/.wape/links.json)
+ */
+export function getSavedLinksFile(): string {
+  return join(getWapeDir(), "links.json");
+}
+
+export function getSavedLinks(): string[] {
+  const file = getSavedLinksFile();
+  if (!existsSync(file)) {
+    return [];
+  }
+  try {
+    const raw = readFileSync(file, "utf-8");
+    const parsed = JSON.parse(raw) as { links?: string[] } | string[];
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return parsed.links ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLinks(newLinks: string[]): {
+  addedCount: number;
+  totalCount: number;
+} {
+  const file = getSavedLinksFile();
+  const existing = new Set(getSavedLinks());
+  let addedCount = 0;
+
+  for (const link of newLinks) {
+    const trimmed = link.trim();
+    if (trimmed && !existing.has(trimmed)) {
+      existing.add(trimmed);
+      addedCount++;
+    }
+  }
+
+  const sortedList = Array.from(existing).sort();
+  writeFileSync(
+    file,
+    JSON.stringify({ version: "1.0.0", links: sortedList }, null, 2),
+    "utf-8",
+  );
+
+  return {
+    addedCount,
+    totalCount: sortedList.length,
+  };
+}
