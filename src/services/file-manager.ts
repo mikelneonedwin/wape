@@ -170,11 +170,10 @@ export function resolveTargetToList(target: string): {
 } {
   const room = getRoomById(target);
   if (room) {
-    const listPath = room.targetList
-      ? resolveListFilePath(room.targetList)
-      : resolveListFilePath(`room_${room.id}`);
+    const listFileName = room.targetList ?? `${room.id}.txt`;
+    const listPath = resolveListFilePath(listFileName);
     return {
-      label: `Room '${room.name}' (${room.id}) -> ${room.targetList ?? `room_${room.id}.txt`}`,
+      label: `Room '${room.id}' -> ${listFileName}`,
       filePath: listPath,
     };
   }

@@ -20,18 +20,24 @@ import { unlinkSync, existsSync, writeFileSync } from "node:fs";
 
 describe("Nigerian Phone Parser & Formatter", () => {
   it("normalizes international +234 numbers", () => {
-    expect(normalizeNigerianPhoneNumber("+2348012345678")).toBe("08012345678");
-    expect(normalizeNigerianPhoneNumber("2349012345678")).toBe("09012345678");
-    expect(normalizeNigerianPhoneNumber("2347037761092")).toBe("07037761092");
+    expect(normalizeNigerianPhoneNumber("+2348012345678")).toBe(
+      "+2348012345678",
+    );
+    expect(normalizeNigerianPhoneNumber("2349012345678")).toBe(
+      "+2349012345678",
+    );
+    expect(normalizeNigerianPhoneNumber("2347037761092")).toBe(
+      "+2347037761092",
+    );
   });
 
   it("normalizes local 0-prefixed numbers", () => {
-    expect(normalizeNigerianPhoneNumber("08012345678")).toBe("08012345678");
-    expect(normalizeNigerianPhoneNumber("09123456789")).toBe("09123456789");
+    expect(normalizeNigerianPhoneNumber("08012345678")).toBe("+2348012345678");
+    expect(normalizeNigerianPhoneNumber("09123456789")).toBe("+2349123456789");
   });
 
   it("normalizes 10-digit numbers missing leading zero", () => {
-    expect(normalizeNigerianPhoneNumber("8012345678")).toBe("08012345678");
+    expect(normalizeNigerianPhoneNumber("8012345678")).toBe("+2348012345678");
   });
 
   it("rejects invalid or non-Nigerian numbers", () => {
@@ -59,14 +65,22 @@ describe("File Manager Contact Operations", () => {
   cleanup();
 
   it("reads, writes, and merges contacts properly", () => {
-    const contactsA = new Set(["08012345678", "08022223333", "08033334444"]);
+    const contactsA = new Set([
+      "+2348012345678",
+      "+2348022223333",
+      "+2348033334444",
+    ]);
     writeContactsToFile(testFileA, contactsA);
 
     const readBack = readContactsFromFile(testFileA);
     expect(readBack.size).toBe(3);
-    expect(readBack.has("08012345678")).toBe(true);
+    expect(readBack.has("+2348012345678")).toBe(true);
 
-    const newExtracts = new Set(["08033334444", "08044445555", "08055556666"]);
+    const newExtracts = new Set([
+      "+2348033334444",
+      "+2348044445555",
+      "+2348055556666",
+    ]);
     const result = mergeContactsIntoFile(testFileA, newExtracts);
 
     expect(result.uniqueExtractsCount).toBe(3);
@@ -80,15 +94,20 @@ describe("File Manager Contact Operations", () => {
   it("calculates common contacts and inventory stats correctly", () => {
     writeContactsToFile(
       testFileA,
-      new Set(["08011111111", "08022222222", "08033333333"]),
+      new Set(["+2348011111111", "+2348022222222", "+2348033333333"]),
     );
     writeContactsToFile(
       testFileB,
-      new Set(["08022222222", "08033333333", "08044444444", "08055555555"]),
+      new Set([
+        "+2348022222222",
+        "+2348033333333",
+        "+2348044444444",
+        "+2348055555555",
+      ]),
     );
 
     const common = getCommonContacts([testFileA, testFileB]);
-    expect(common).toEqual(["08022222222", "08033333333"]);
+    expect(common).toEqual(["+2348022222222", "+2348033333333"]);
 
     const stats = getInventoryStats(testFileA, testFileB);
     expect(stats.countA).toBe(3);

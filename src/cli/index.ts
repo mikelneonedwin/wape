@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
 import { input, select } from "@inquirer/prompts";
 import { Command } from "commander";
 import pc from "picocolors";
@@ -428,7 +429,7 @@ roomCmd
         const pickedRoomId = await select<string>({
           message: "Select room to inspect:",
           choices: rooms.map((r) => ({
-            name: `${r.name} ${pc.dim(`[${r.id}] (${r.groupJidRowIds.length} groups)`)}`,
+            name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
             value: r.id,
           })),
         });
@@ -556,6 +557,95 @@ roomCmd
       }
     }
     console.log("");
+  });
+
+roomCmd
+  .command("path <id>")
+  .description("Get the absolute path to a room's contact list file")
+  .action((id: string) => {
+    const room = getRoomById(id);
+    if (!room) {
+      console.error(
+        pc.red(
+          `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+        ),
+      );
+      process.exit(1);
+    }
+    const listPath = resolveListFilePath(room.targetList ?? `${room.id}.txt`);
+    console.log(listPath);
+  });
+
+roomCmd
+  .command("patch <id> <files...>")
+  .description(
+    "Import and merge contacts from external text file(s) into a room's list",
+  )
+  .action((id: string, files: string[]) => {
+    try {
+      const room = getRoomById(id);
+      if (!room) {
+        console.error(
+          pc.red(
+            `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+          ),
+        );
+        process.exit(1);
+      }
+
+      const targetListPath = resolveListFilePath(
+        room.targetList ?? `${room.id}.txt`,
+      );
+      const allNewContacts = new Set<string>();
+
+      for (const f of files) {
+        const resolvedPath = resolve(f);
+        if (!existsSync(resolvedPath)) {
+          console.error(
+            pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
+          );
+          process.exit(1);
+        }
+        const contacts = readContactsFromFile(resolvedPath);
+        for (const c of contacts) allNewContacts.add(c);
+      }
+
+      if (allNewContacts.size === 0) {
+        console.log(
+          pc.yellow(
+            `\nNo valid Nigerian phone numbers found in the provided file(s).\n`,
+          ),
+        );
+        return;
+      }
+
+      const mergeResult = mergeContactsIntoFile(targetListPath, allNewContacts);
+
+      console.log(pc.green("\n" + "=".repeat(58)));
+      console.log(pc.bold(pc.green(`        PATCH REPORT: Room '${room.id}'`)));
+      console.log("=".repeat(58));
+      console.log(
+        `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+      );
+      console.log(`${pc.bold("Source File(s):")}          ${files.join(", ")}`);
+      console.log(
+        `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(mergeResult.uniqueExtractsCount.toLocaleString())}`,
+      );
+      console.log(
+        `${pc.bold("New Contacts Added:")}      ${pc.green("+" + mergeResult.addedCount.toLocaleString())}`,
+      );
+      console.log(
+        `${pc.bold("Total Contacts in Room:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
+      );
+      console.log("=".repeat(58) + "\n");
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
   });
 
 roomCmd
@@ -779,6 +869,135 @@ program
       process.exit(1);
     }
   });
+/**
+ * Patch Command
+ */
+program
+  .command("patch [args...]")
+  .description(
+    "Patch/import contacts from external text file(s) into global lists (--main, --lock) or a room/list target",
+  )
+  .option("--main", "Patch into global main list (~/.wape/lists/main.txt)")
+  .option("--lock", "Patch into global lock list (~/.wape/lists/lock.txt)")
+  .action(
+    (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
+      try {
+        let targetLabel = "";
+        let targetListPath = "";
+        let fileArgs: string[] = [];
+
+        if (opts.main && opts.lock) {
+          console.error(
+            pc.red(
+              "\n❌ Error: Cannot specify both --main and --lock simultaneously.\n",
+            ),
+          );
+          process.exit(1);
+        }
+
+        if (opts.main) {
+          targetLabel = "Global Main List (main.txt)";
+          targetListPath = getMainListPath();
+          fileArgs = args;
+        } else if (opts.lock) {
+          targetLabel = "Global Lock List (lock.txt)";
+          targetListPath = getLockListPath();
+          fileArgs = args;
+        } else {
+          if (args.length < 2) {
+            console.error(
+              pc.red(
+                "\n❌ Error: Please specify a target list/room and at least one source file.\n" +
+                  "   Usage: wape patch --main <file1.txt> [file2.txt...]\n" +
+                  "          wape patch --lock <file1.txt> [file2.txt...]\n" +
+                  "          wape patch <target> <file1.txt> [file2.txt...]\n",
+              ),
+            );
+            process.exit(1);
+          }
+          const [targetArg, ...restFiles] = args;
+          if (!targetArg) {
+            console.error(
+              pc.red("\n❌ Error: Please specify a target list or room.\n"),
+            );
+            process.exit(1);
+          }
+          const resolved = resolveTargetToList(targetArg);
+          targetLabel = resolved.label;
+          targetListPath = resolved.filePath;
+          fileArgs = restFiles;
+        }
+
+        if (fileArgs.length === 0) {
+          console.error(
+            pc.red(
+              "\n❌ Error: At least one source text file must be specified.\n" +
+                "   Usage: wape patch --main <file1.txt> [file2.txt...]\n" +
+                "          wape patch --lock <file1.txt> [file2.txt...]\n" +
+                "          wape patch <target> <file1.txt> [file2.txt...]\n",
+            ),
+          );
+          process.exit(1);
+        }
+
+        const allNewContacts = new Set<string>();
+
+        for (const f of fileArgs) {
+          const resolvedPath = resolve(f);
+          if (!existsSync(resolvedPath)) {
+            console.error(
+              pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
+            );
+            process.exit(1);
+          }
+          const contacts = readContactsFromFile(resolvedPath);
+          for (const c of contacts) allNewContacts.add(c);
+        }
+
+        if (allNewContacts.size === 0) {
+          console.log(
+            pc.yellow(
+              "\nNo valid Nigerian phone numbers found in the provided file(s).\n",
+            ),
+          );
+          return;
+        }
+
+        const mergeResult = mergeContactsIntoFile(
+          targetListPath,
+          allNewContacts,
+        );
+
+        console.log(pc.green("\n" + "=".repeat(58)));
+        console.log(pc.bold(pc.green(`        PATCH REPORT: ${targetLabel}`)));
+        console.log("=".repeat(58));
+        console.log(
+          `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+        );
+        console.log(
+          `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
+        );
+        console.log(
+          `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(mergeResult.uniqueExtractsCount.toLocaleString())}`,
+        );
+        console.log(
+          `${pc.bold("New Contacts Added:")}      ${pc.green("+" + mergeResult.addedCount.toLocaleString())}`,
+        );
+        console.log(
+          `${pc.bold("Total Contacts in List:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
+        );
+        console.log("=".repeat(58) + "\n");
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
 /**
  * Print Command
  */

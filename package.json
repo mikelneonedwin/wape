@@ -22,6 +22,7 @@
     "scan": "bun run src/cli/index.ts scan",
     "rooms": "bun run src/cli/index.ts rooms",
     "pair": "bun run src/cli/index.ts pair",
+    "patch": "bun run src/cli/index.ts patch",
     "print": "bun run src/cli/index.ts print",
     "stats": "bun run src/cli/index.ts stats",
     "lists": "bun run src/cli/index.ts lists",

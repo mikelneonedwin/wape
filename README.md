@@ -89,6 +89,12 @@ wape rooms new <id>
 # View room details, included groups, and exited/missing status
 wape rooms info [id]
 
+# Print absolute path to a room's contact list file
+wape rooms path <id>
+
+# Patch/import contacts from external text file(s) into a room's list
+wape rooms patch <id> <file1.txt> [file2.txt...]
+
 # Edit groups within a room
 wape rooms edit [id]
 
@@ -164,7 +170,24 @@ wape stats <target1> <target2> <target3>
 
 ---
 
-### 6. Print Contacts (`wape print`)
+### 6. Patch & Import Contacts (`wape patch`)
+
+Import and merge contacts from external text file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
+
+```bash
+# Patch external text file(s) into global main list (~/.wape/lists/main.txt)
+wape patch --main leads.txt extra.txt
+
+# Patch external text file(s) into global lock list (~/.wape/lists/lock.txt)
+wape patch --lock locked_numbers.txt
+
+# Patch external text file(s) into a specific room or custom list target
+wape patch <target> file1.txt file2.txt
+```
+
+---
+
+### 7. Print Contacts (`wape print`)
 
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
@@ -174,7 +197,7 @@ wape print <target>
 
 ---
 
-### 7. Contact Lists Repository (`wape lists`)
+### 8. Contact Lists Repository (`wape lists`)
 
 Shows all contact list files currently managed in `~/.wape/lists/` and their contact counts.
 
