@@ -11,6 +11,7 @@ A TypeScript CLI toolkit for decrypting WhatsApp backup databases, organizing Wh
 This toolkit requires a JavaScript/TypeScript package manager (Bun, pnpm, or npm) and Python 3 (for decryption).
 
 ### 1. Clone and Install Dependencies
+
 ```bash
 git clone https://github.com/mikelneonedwin/wape.git
 cd wape
@@ -18,7 +19,9 @@ bun install   # or: npm install / pnpm install
 ```
 
 ### 2. Setup Python Virtual Environment
+
 `wape` expects a Python virtual environment at `.venv` containing `wa-crypt-tools`:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -26,22 +29,29 @@ pip install wa-crypt-tools
 ```
 
 ### 3. Link Globally (Optional but Recommended)
+
 Link `wape` to your global path to use the `wape` command anywhere in your terminal:
+
 ```bash
 bun link      # or: npm link / pnpm link
 ```
-*(If you prefer not to link globally, you can prefix any command with `bun run wape <command>` or `bun run <command>`)*.
+
+_(If you prefer not to link globally, you can prefix any command with `bun run wape <command>` or `bun run <command>`)_.
 
 ### 4. Configure Decryption Key
+
 Provide your 64-character WhatsApp decryption key (stored in `~/.wape/config.json`):
+
 ```bash
 wape config set --key <your-64-char-hex-key>
 ```
 
 ### 5. Backup Auto-Discovery
+
 `wape` automatically detects backup databases matching `msgstore*.db*.crypt*` across `~/Downloads`, `~`, and `~/.wape`. If multiple backups are present, `wape` prompts you to choose which one to use.
 
 To bypass auto-discovery and set an explicit path:
+
 ```bash
 wape config set --backup /path/to/msgstore.db.crypt15
 ```
@@ -51,6 +61,7 @@ wape config set --backup /path/to/msgstore.db.crypt15
 ## 🛠 Available Commands
 
 ### 1. Configuration (`wape config`)
+
 Manage settings stored in `~/.wape/config.json`.
 
 ```bash
@@ -65,6 +76,7 @@ wape config set --backup <path>
 ---
 
 ### 2. Room Management (`wape rooms`)
+
 Rooms group related WhatsApp chats into persistent bundles stored in `~/.wape/rooms.json`. Each room automatically maps to its dedicated contact list file (`~/.wape/lists/<id>.txt`).
 
 ```bash
@@ -72,7 +84,7 @@ Rooms group related WhatsApp chats into persistent bundles stored in `~/.wape/ro
 wape rooms list
 
 # Create a new room with an explicit ID
-wape rooms create <id>
+wape rooms new <id>
 
 # View room details, included groups, and exited/missing status
 wape rooms info [id]
@@ -96,6 +108,7 @@ wape rooms scan --lock
 ---
 
 ### 3. Group & Room Scanning (`wape scan`)
+
 Extracts and sieves unique Nigerian phone numbers from selected groups or configured rooms with live search and community nesting.
 
 ```bash
@@ -113,6 +126,7 @@ wape scan <room-id> --lock
 ---
 
 ### 4. Pair Contacts (Intersection) (`wape pair`)
+
 Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can pair across 2 or more lists simultaneously.
 
 ```bash
@@ -126,7 +140,9 @@ wape pair <target1> <target2> [target3...]
 ---
 
 ### 5. Stats & Union Breakdown (`wape stats`)
+
 Computes aggregated stats totals across lists and rooms:
+
 - **0 arguments**: Global overview of all lists in `~/.wape/lists/` and grand unique union.
 - **1 argument**: Contact count and stats for that specific list or room.
 - **2 arguments**: Comparative analysis (totals, overlap, and union).
@@ -149,6 +165,7 @@ wape stats <target1> <target2> <target3>
 ---
 
 ### 6. Print Contacts (`wape print`)
+
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
 ```bash
@@ -158,6 +175,7 @@ wape print <target>
 ---
 
 ### 7. Contact Lists Repository (`wape lists`)
+
 Shows all contact list files currently managed in `~/.wape/lists/` and their contact counts.
 
 ```bash

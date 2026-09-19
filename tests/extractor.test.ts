@@ -4,7 +4,10 @@ import { join } from "node:path";
 process.env.WAPE_HOME = join(tmpdir(), "test_wape_sandbox");
 
 import { describe, expect, it } from "bun:test";
-import { formatPhoneNumber, normalizeNigerianPhoneNumber } from "../src/services/phone";
+import {
+  formatPhoneNumber,
+  normalizeNigerianPhoneNumber,
+} from "../src/services/phone";
 import {
   getCommonContacts,
   getInventoryStats,
@@ -75,8 +78,14 @@ describe("File Manager Contact Operations", () => {
   });
 
   it("calculates common contacts and inventory stats correctly", () => {
-    writeContactsToFile(testFileA, new Set(["08011111111", "08022222222", "08033333333"]));
-    writeContactsToFile(testFileB, new Set(["08022222222", "08033333333", "08044444444", "08055555555"]));
+    writeContactsToFile(
+      testFileA,
+      new Set(["08011111111", "08022222222", "08033333333"]),
+    );
+    writeContactsToFile(
+      testFileB,
+      new Set(["08022222222", "08033333333", "08044444444", "08055555555"]),
+    );
 
     const common = getCommonContacts([testFileA, testFileB]);
     expect(common).toEqual(["08022222222", "08033333333"]);
@@ -107,9 +116,13 @@ describe("File Manager Contact Operations", () => {
 
 describe("Room Store and Management", () => {
   it("saves, retrieves, renames, and deletes rooms properly", async () => {
-    const { saveRoom, getRoomById, renameRoomId, deleteRoom, resolveListFilePath } = await import(
-      "../src/services/wape-store"
-    );
+    const {
+      saveRoom,
+      getRoomById,
+      renameRoomId,
+      deleteRoom,
+      resolveListFilePath,
+    } = await import("../src/services/wape-store");
     const { writeFileSync, existsSync, unlinkSync } = await import("node:fs");
 
     const testRoom = {
@@ -152,17 +165,19 @@ describe("Room Store and Management", () => {
     const testWapeDir = join(tmpdir(), "test_wape_" + Date.now());
     process.env.WAPE_HOME = testWapeDir;
 
-    const { saveAppConfig, getAppConfig } = await import("../src/services/wape-store");
-    saveAppConfig({ key: "test-hex-key-123", backupPath: "/custom/path/msgstore.db.crypt15" });
+    const { saveAppConfig, getAppConfig } =
+      await import("../src/services/wape-store");
+    saveAppConfig({
+      key: "test-hex-key-123",
+      backupPath: "/custom/path/msgstore.db.crypt15",
+    });
     const cfg = getAppConfig();
     expect(cfg.key).toBe("test-hex-key-123");
     expect(cfg.backupPath).toBe("/custom/path/msgstore.db.crypt15");
 
     const { rmSync, existsSync } = await import("node:fs");
-    if (existsSync(testWapeDir)) rmSync(testWapeDir, { recursive: true, force: true });
+    if (existsSync(testWapeDir))
+      rmSync(testWapeDir, { recursive: true, force: true });
     process.env.WAPE_HOME = originalHome;
   });
 });
-
-
-

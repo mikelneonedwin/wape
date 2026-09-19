@@ -31,12 +31,17 @@ export interface SearchCheckboxConfig<Value> {
   choices: readonly SearchCheckboxChoice<Value>[];
   pageSize?: number;
   required?: boolean;
-  validate?: (choices: ReadonlyArray<Value>) => boolean | string | Promise<boolean | string>;
+  validate?: (
+    choices: ReadonlyArray<Value>,
+  ) => boolean | string | Promise<boolean | string>;
   theme?: Partial<Theme>;
 }
 
 export const searchCheckbox = createPrompt(
-  <Value>(config: SearchCheckboxConfig<Value>, done: (value: Value[]) => void) => {
+  <Value>(
+    config: SearchCheckboxConfig<Value>,
+    done: (value: Value[]) => void,
+  ) => {
     const { pageSize = 15, required = false, validate = () => true } = config;
     const theme = makeTheme(config.theme);
     const [status, setStatus] = useState<"idle" | "done">("idle");
@@ -57,7 +62,9 @@ export const searchCheckbox = createPrompt(
     const filteredChoices = useMemo(() => {
       const query = searchTerm.trim().toLowerCase();
       const list = query
-        ? config.choices.filter((choice) => choice.name.toLowerCase().includes(query))
+        ? config.choices.filter((choice) =>
+            choice.name.toLowerCase().includes(query),
+          )
         : config.choices;
 
       return list.map((choice) => ({
@@ -85,7 +92,11 @@ export const searchCheckbox = createPrompt(
           setStatus("done");
           done(selectedValues);
         } else {
-          setError(typeof isValid === "string" ? isValid : "You must select a valid choice.");
+          setError(
+            typeof isValid === "string"
+              ? isValid
+              : "You must select a valid choice.",
+          );
         }
       } else if (isUpKey(key) || isDownKey(key)) {
         if (filteredChoices.length === 0) return;
@@ -101,7 +112,11 @@ export const searchCheckbox = createPrompt(
         const current = filteredChoices[active];
         if (current) {
           if (current.disabled) {
-            setError(typeof current.disabled === "string" ? current.disabled : "This item is disabled.");
+            setError(
+              typeof current.disabled === "string"
+                ? current.disabled
+                : "This item is disabled.",
+            );
           } else {
             const nextSet = new Set(checkedSet);
             if (nextSet.has(current.value)) {
@@ -115,7 +130,9 @@ export const searchCheckbox = createPrompt(
       } else if (key.ctrl && key.name === "a") {
         // Ctrl+A: Toggle all filtered choices
         const enabledChoices = filteredChoices.filter((c) => !c.disabled);
-        const allVisibleChecked = enabledChoices.every((c) => checkedSet.has(c.value));
+        const allVisibleChecked = enabledChoices.every((c) =>
+          checkedSet.has(c.value),
+        );
         const nextSet = new Set(checkedSet);
 
         if (allVisibleChecked) {
@@ -135,9 +152,11 @@ export const searchCheckbox = createPrompt(
         const current = filteredChoices[active];
         if (current && current.category) {
           const categoryChoices = filteredChoices.filter(
-            (c) => c.category === current.category && !c.disabled
+            (c) => c.category === current.category && !c.disabled,
           );
-          const allCommunityChecked = categoryChoices.every((c) => checkedSet.has(c.value));
+          const allCommunityChecked = categoryChoices.every((c) =>
+            checkedSet.has(c.value),
+          );
           const nextSet = new Set(checkedSet);
 
           if (allCommunityChecked) {
@@ -160,7 +179,9 @@ export const searchCheckbox = createPrompt(
         const char =
           "sequence" in key && typeof key.sequence === "string"
             ? key.sequence
-            : (key.name?.length === 1 ? key.name : "");
+            : key.name?.length === 1
+              ? key.name
+              : "";
         if (char && char.length === 1 && char >= " ") {
           setSearchTerm(searchTerm + char);
           setActive(0);
@@ -177,14 +198,16 @@ export const searchCheckbox = createPrompt(
       const answer = theme.style.answer(
         selectedNames.length > 0
           ? `${selectedNames.length} selected (${selectedNames.slice(0, 3).join(", ")}${selectedNames.length > 3 ? ", ..." : ""})`
-          : "None"
+          : "None",
       );
       return [prefix, message, answer].filter(Boolean).join(" ");
     }
 
     let pageOutput: string;
     if (filteredChoices.length === 0) {
-      pageOutput = pc.yellow(`  No groups found matching "${searchTerm}". (Press Backspace to clear search)`);
+      pageOutput = pc.yellow(
+        `  No groups found matching "${searchTerm}". (Press Backspace to clear search)`,
+      );
     } else {
       pageOutput = usePagination({
         items: filteredChoices,
@@ -193,7 +216,9 @@ export const searchCheckbox = createPrompt(
         loop: true,
         renderItem({ item, isActive, index }) {
           const cursor = isActive ? pc.cyan(figures.pointer) : " ";
-          const checkbox = item.checked ? pc.green(figures.circleFilled) : pc.dim(figures.circle);
+          const checkbox = item.checked
+            ? pc.green(figures.circleFilled)
+            : pc.dim(figures.circle);
           const label = isActive ? pc.cyan(pc.bold(item.name)) : item.name;
 
           // Check if this item starts a new community category
@@ -209,16 +234,14 @@ export const searchCheckbox = createPrompt(
       });
     }
 
-    const selectedBadge = pc.green(
-      `[${checkedSet.size} selected]`
-    );
+    const selectedBadge = pc.green(`[${checkedSet.size} selected]`);
 
     const searchDisplay = searchTerm
       ? `${pc.dim("Search:")} ${pc.bold(pc.yellow(searchTerm))}`
       : pc.dim("(type to search live...)");
 
     const helpLine = pc.dim(
-      `${pc.bold("↑↓")} navigate • ${pc.bold("space")} check • ${pc.bold("tab")} toggle community • ${pc.bold("ctrl+a")} toggle all • ${pc.bold("type")} search • ${pc.bold("⏎")} proceed`
+      `${pc.bold("↑↓")} navigate • ${pc.bold("space")} check • ${pc.bold("tab")} toggle community • ${pc.bold("ctrl+a")} toggle all • ${pc.bold("type")} search • ${pc.bold("⏎")} proceed`,
     );
 
     const lines = [
@@ -234,5 +257,5 @@ export const searchCheckbox = createPrompt(
       .trimEnd();
 
     return `${lines}${cursorHide}`;
-  }
+  },
 );

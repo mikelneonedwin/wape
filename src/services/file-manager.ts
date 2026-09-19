@@ -1,7 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { normalizeNigerianPhoneNumber } from "./phone";
-import { getAllKnownLists, getRoomById, resolveListFilePath } from "./wape-store";
+import {
+  getAllKnownLists,
+  getRoomById,
+  resolveListFilePath,
+} from "./wape-store";
 
 export function readContactsFromFile(filePath: string): Set<string> {
   const fullPath = resolve(filePath);
@@ -25,7 +29,10 @@ export function readContactsFromFile(filePath: string): Set<string> {
   return contacts;
 }
 
-export function writeContactsToFile(filePath: string, contacts: Set<string>): void {
+export function writeContactsToFile(
+  filePath: string,
+  contacts: Set<string>,
+): void {
   const fullPath = resolve(filePath);
   const sorted = Array.from(contacts).sort();
   const content = sorted.length > 0 ? `${sorted.join("\n")}\n` : "";
@@ -38,7 +45,10 @@ export interface MergeResult {
   totalCount: number;
 }
 
-export function mergeContactsIntoFile(filePath: string, newContacts: Set<string>): MergeResult {
+export function mergeContactsIntoFile(
+  filePath: string,
+  newContacts: Set<string>,
+): MergeResult {
   const existingContacts = readContactsFromFile(filePath);
   const initialSize = existingContacts.size;
 
@@ -61,10 +71,10 @@ export function mergeContactsIntoFile(filePath: string, newContacts: Set<string>
 
 export function getCommonContacts(filePaths: string[]): string[] {
   if (filePaths.length === 0 || !filePaths[0]) return [];
-  
+
   // Start with the first set
   let common = readContactsFromFile(filePaths[0]);
-  
+
   // Intersect with remaining sets
   for (let i = 1; i < filePaths.length; i++) {
     const path = filePaths[i];
@@ -91,7 +101,12 @@ export interface InventoryStats {
   unionCount: number;
 }
 
-export function getInventoryStats(fileAPath: string, fileBPath: string, labelA = "List A", labelB = "List B"): InventoryStats {
+export function getInventoryStats(
+  fileAPath: string,
+  fileBPath: string,
+  labelA = "List A",
+  labelB = "List B",
+): InventoryStats {
   const setA = readContactsFromFile(fileAPath);
   const setB = readContactsFromFile(fileBPath);
 
@@ -149,7 +164,10 @@ export function getGlobalInventory(): GlobalInventorySummary {
 /**
  * Resolves a target parameter which could be a room ID, a list name, or a file path.
  */
-export function resolveTargetToList(target: string): { label: string; filePath: string } {
+export function resolveTargetToList(target: string): {
+  label: string;
+  filePath: string;
+} {
   const room = getRoomById(target);
   if (room) {
     const listPath = room.targetList

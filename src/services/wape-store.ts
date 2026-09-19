@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -52,7 +59,9 @@ export function saveAppConfig(config: AppConfig): void {
 }
 
 export function getWapeDir(): string {
-  const dir = process.env.WAPE_HOME ? resolve(process.env.WAPE_HOME) : join(homedir(), ".wape");
+  const dir = process.env.WAPE_HOME
+    ? resolve(process.env.WAPE_HOME)
+    : join(homedir(), ".wape");
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
@@ -117,7 +126,9 @@ export function getRoomById(id: string): Room | null {
 
 export function saveRoom(room: Room): void {
   const rooms = getRooms();
-  const index = rooms.findIndex((r) => r.id.toLowerCase() === room.id.toLowerCase());
+  const index = rooms.findIndex(
+    (r) => r.id.toLowerCase() === room.id.toLowerCase(),
+  );
   if (index >= 0) {
     rooms[index] = { ...room, updatedAt: Date.now() };
   } else {
@@ -136,7 +147,10 @@ export function deleteRoom(id: string): boolean {
   return false;
 }
 
-export function renameRoomId(oldId: string, newId: string): { success: boolean; error?: string; listRenamed?: boolean } {
+export function renameRoomId(
+  oldId: string,
+  newId: string,
+): { success: boolean; error?: string; listRenamed?: boolean } {
   const cleanOldId = oldId.trim().toLowerCase();
   const cleanNewId = newId.trim().toLowerCase();
 
@@ -145,7 +159,10 @@ export function renameRoomId(oldId: string, newId: string): { success: boolean; 
   }
 
   if (cleanOldId === cleanNewId) {
-    return { success: false, error: "New room ID must be different from current ID." };
+    return {
+      success: false,
+      error: "New room ID must be different from current ID.",
+    };
   }
 
   const rooms = getRooms();
@@ -157,7 +174,10 @@ export function renameRoomId(oldId: string, newId: string): { success: boolean; 
 
   const existingNew = rooms.find((r) => r.id.toLowerCase() === cleanNewId);
   if (existingNew) {
-    return { success: false, error: `A room with ID '${cleanNewId}' already exists.` };
+    return {
+      success: false,
+      error: `A room with ID '${cleanNewId}' already exists.`,
+    };
   }
 
   // Rename physical list file if old list file exists
@@ -170,7 +190,10 @@ export function renameRoomId(oldId: string, newId: string): { success: boolean; 
       renameSync(oldListPath, newListPath);
       listRenamed = true;
     } catch (err) {
-      return { success: false, error: `Failed to rename list file: ${err instanceof Error ? err.message : String(err)}` };
+      return {
+        success: false,
+        error: `Failed to rename list file: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
 
@@ -210,7 +233,11 @@ export function resolveListFilePath(listNameOrPath: string): string {
   }
 
   // If path contains directory separators (e.g. subdir/custom.txt or subdir\\custom.txt), but not just ./ or .\\
-  if ((trimmed.includes("/") || trimmed.includes("\\")) && !trimmed.startsWith("./") && !trimmed.startsWith(".\\")) {
+  if (
+    (trimmed.includes("/") || trimmed.includes("\\")) &&
+    !trimmed.startsWith("./") &&
+    !trimmed.startsWith(".\\")
+  ) {
     return resolve(trimmed);
   }
 
@@ -222,16 +249,31 @@ export function resolveListFilePath(listNameOrPath: string): string {
 /**
  * Lists all known contact text files in ~/.wape/lists/.
  */
-export function getAllKnownLists(): { name: string; path: string; isGlobal: boolean }[] {
+export function getAllKnownLists(): {
+  name: string;
+  path: string;
+  isGlobal: boolean;
+}[] {
   const listsDir = getWapeListsDir();
-  const listsMap = new Map<string, { name: string; path: string; isGlobal: boolean }>();
+  const listsMap = new Map<
+    string,
+    { name: string; path: string; isGlobal: boolean }
+  >();
 
   // Fixed global main & lock in ~/.wape/lists/
   const mainPath = getMainListPath();
   const lockPath = getLockListPath();
 
-  listsMap.set("main", { name: "main (Global)", path: mainPath, isGlobal: true });
-  listsMap.set("lock", { name: "lock (Global)", path: lockPath, isGlobal: true });
+  listsMap.set("main", {
+    name: "main (Global)",
+    path: mainPath,
+    isGlobal: true,
+  });
+  listsMap.set("lock", {
+    name: "lock (Global)",
+    path: lockPath,
+    isGlobal: true,
+  });
 
   // Scan ~/.wape/lists for custom lists
   if (existsSync(listsDir)) {
@@ -241,7 +283,11 @@ export function getAllKnownLists(): { name: string; path: string; isGlobal: bool
         const fullPath = join(listsDir, file);
         const baseName = file.replace(/\.txt$/, "");
         if (fullPath !== mainPath && fullPath !== lockPath) {
-          listsMap.set(baseName, { name: baseName, path: fullPath, isGlobal: false });
+          listsMap.set(baseName, {
+            name: baseName,
+            path: fullPath,
+            isGlobal: false,
+          });
         }
       }
     }

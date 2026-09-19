@@ -12,7 +12,11 @@ import {
 } from "../services/wape-store";
 import { searchCheckbox } from "./search-checkbox";
 
-function formatGroupLabel(group: { subject: string; communityName: string | null; participantCount: number }): string {
+function formatGroupLabel(group: {
+  subject: string;
+  communityName: string | null;
+  participantCount: number;
+}): string {
   if (group.communityName) {
     return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject} ${pc.dim(`(${group.participantCount} members)`)}`;
   }
@@ -21,7 +25,9 @@ function formatGroupLabel(group: { subject: string; communityName: string | null
 
 export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
   if (rooms.length === 0) {
-    console.log(pc.yellow("\nNo rooms found. Use 'wape room create <id>' to create one.\n"));
+    console.log(
+      pc.yellow("\nNo rooms found. Use 'wape rooms new <id>' to create one.\n"),
+    );
     return;
   }
 
@@ -37,18 +43,24 @@ export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
     const contacts = readContactsFromFile(filePath);
     const listInfo = `${pc.green(listFile)} ${pc.yellow(`(${contacts.size} contacts)`)}`;
 
-    const missingCount = groupSet ? r.groupJidRowIds.filter((id) => !groupSet.has(id)).length : 0;
-    const missingBadge = missingCount > 0 ? ` ${pc.red(`(${missingCount} missing/exited)`)}` : "";
+    const missingCount = groupSet
+      ? r.groupJidRowIds.filter((id) => !groupSet.has(id)).length
+      : 0;
+    const missingBadge =
+      missingCount > 0 ? ` ${pc.red(`(${missingCount} missing/exited)`)}` : "";
 
     console.log(
-      `  ${pc.bold((idx + 1).toString().padStart(2, " "))}. ${pc.bold(pc.white(r.id))}`
+      `  ${pc.bold((idx + 1).toString().padStart(2, " "))}. ${pc.bold(pc.white(r.id))}`,
     );
     console.log(
-      `      ${pc.dim("Groups:")} ${pc.yellow(r.groupJidRowIds.length)} groups${missingBadge} | ${pc.dim("List:")} ${listInfo}`
+      `      ${pc.dim("Groups:")} ${pc.yellow(r.groupJidRowIds.length)} groups${missingBadge} | ${pc.dim("List:")} ${listInfo}`,
     );
     if (r.groupNames && r.groupNames.length > 0) {
       const preview = r.groupNames.slice(0, 2).join(", ");
-      const more = r.groupNames.length > 2 ? pc.dim(`, +${r.groupNames.length - 2} more`) : "";
+      const more =
+        r.groupNames.length > 2
+          ? pc.dim(`, +${r.groupNames.length - 2} more`)
+          : "";
       console.log(`      ${pc.dim("Included:")} ${preview}${more}`);
     }
     console.log(pc.dim("-".repeat(75)));
@@ -65,11 +77,17 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
   const listFile = room.targetList ?? `${room.id}.txt`;
   const filePath = resolveListFilePath(listFile);
   const contacts = readContactsFromFile(filePath);
-  console.log(`${pc.bold("List File:")}         ${pc.green(listFile)} ${pc.dim(`(${filePath})`)}`);
-  console.log(`${pc.bold("Contacts in List:")}  ${pc.magenta(contacts.size.toLocaleString() + " contacts")}`);
+  console.log(
+    `${pc.bold("List File:")}         ${pc.green(listFile)} ${pc.dim(`(${filePath})`)}`,
+  );
+  console.log(
+    `${pc.bold("Contacts in List:")}  ${pc.magenta(contacts.size.toLocaleString() + " contacts")}`,
+  );
 
   const groupMap = groups ? new Map(groups.map((g) => [g.jidRowId, g])) : null;
-  const activeCount = groupMap ? room.groupJidRowIds.filter((id) => groupMap.has(id)).length : room.groupJidRowIds.length;
+  const activeCount = groupMap
+    ? room.groupJidRowIds.filter((id) => groupMap.has(id)).length
+    : room.groupJidRowIds.length;
   const missingCount = room.groupJidRowIds.length - activeCount;
 
   const countBadge =
@@ -83,7 +101,10 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
 
   room.groupJidRowIds.forEach((jid, idx) => {
     const num = pc.dim((idx + 1).toString().padStart(2, " ") + ".");
-    const originalName = room.groupNames && room.groupNames[idx] ? room.groupNames[idx] : `JID ${jid}`;
+    const originalName =
+      room.groupNames && room.groupNames[idx]
+        ? room.groupNames[idx]
+        : `JID ${jid}`;
 
     if (groupMap) {
       const g = groupMap.get(jid);
@@ -93,22 +114,29 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
       }
       // Group was exited or is missing from backup
       console.log(
-        `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(originalName))} ${pc.dim(`(JID: ${jid} • Read-only)`)}`
+        `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(originalName))} ${pc.dim(`(JID: ${jid} • Read-only)`)}`,
       );
       return;
     }
 
-    console.log(`  ${num} ${pc.white(originalName)} ${pc.dim(`(JID: ${jid})`)}`);
+    console.log(
+      `  ${num} ${pc.white(originalName)} ${pc.dim(`(JID: ${jid})`)}`,
+    );
   });
 
   console.log("=".repeat(75) + "\n");
 }
 
-export async function createRoomInteractive(groups: GroupSummary[], id: string): Promise<Room | null> {
+export async function createRoomInteractive(
+  groups: GroupSummary[],
+  id: string,
+): Promise<Room | null> {
   const cleanId = id.trim().toLowerCase();
 
   if (getRoomById(cleanId)) {
-    console.error(pc.red(`\n❌ Error: A room with ID '${cleanId}' already exists.\n`));
+    console.error(
+      pc.red(`\n❌ Error: A room with ID '${cleanId}' already exists.\n`),
+    );
     return null;
   }
 
@@ -126,7 +154,9 @@ export async function createRoomInteractive(groups: GroupSummary[], id: string):
     })),
   });
 
-  const selectedGroups = groups.filter((g) => selectedJids.includes(g.jidRowId));
+  const selectedGroups = groups.filter((g) =>
+    selectedJids.includes(g.jidRowId),
+  );
   const groupNames = selectedGroups.map((g) => g.subject);
 
   // Every room strictly has its dedicated list named after its ID
@@ -145,13 +175,16 @@ export async function createRoomInteractive(groups: GroupSummary[], id: string):
 
   console.log(
     pc.green(
-      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${room.groupJidRowIds.length} groups! (List: ~/.wape/lists/${targetList})\n`
-    )
+      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${room.groupJidRowIds.length} groups! (List: ~/.wape/lists/${targetList})\n`,
+    ),
   );
   return room;
 }
 
-export async function editRoomInteractive(groups: GroupSummary[], initialId?: string): Promise<void> {
+export async function editRoomInteractive(
+  groups: GroupSummary[],
+  initialId?: string,
+): Promise<void> {
   const rooms = getRooms();
   if (rooms.length === 0) {
     console.log(pc.yellow("\nNo rooms available to edit."));
@@ -200,11 +233,17 @@ export async function editRoomInteractive(groups: GroupSummary[], initialId?: st
       })),
     });
 
-    const updatedGroups = groups.filter((g) => updatedJids.includes(g.jidRowId));
+    const updatedGroups = groups.filter((g) =>
+      updatedJids.includes(g.jidRowId),
+    );
     room.groupJidRowIds = updatedJids;
     room.groupNames = updatedGroups.map((g) => g.subject);
     saveRoom(room);
-    console.log(pc.green(`\n✅ Updated room '${room.id}' groups (${room.groupJidRowIds.length} total).\n`));
+    console.log(
+      pc.green(
+        `\n✅ Updated room '${room.id}' groups (${room.groupJidRowIds.length} total).\n`,
+      ),
+    );
   } else if (action === "delete") {
     const deleteConfirm = await input({
       message: `Are you sure you want to delete room '${room.id}'? (yes/no):`,
@@ -232,7 +271,12 @@ export async function manageRoomsMenu(groups: GroupSummary[]): Promise<void> {
       choices: [
         { name: "📋 View all rooms", value: "list" },
         ...(rooms.length > 0
-          ? [{ name: "✏️  Edit / manage an existing room", value: "edit" as const }]
+          ? [
+              {
+                name: "✏️  Edit / manage an existing room",
+                value: "edit" as const,
+              },
+            ]
           : []),
         { name: "🔙 Exit room manager", value: "exit" },
       ],

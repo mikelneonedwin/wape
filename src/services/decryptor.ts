@@ -1,8 +1,15 @@
 import { input, select } from "@inquirer/prompts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, openSync, readSync, closeSync, statSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  existsSync,
+  openSync,
+  readSync,
+  closeSync,
+  statSync,
+  readdirSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import pc from "picocolors";
 import { getAppConfig, getWapeDir, saveAppConfig } from "./wape-store";
@@ -28,11 +35,7 @@ export function isSqliteDatabase(filePath: string): boolean {
  * Also accepts "msgstore" variation.
  */
 export function discoverMsgstoreBackups(): string[] {
-  const candidateDirs = [
-    join(homedir(), "Downloads"),
-    homedir(),
-    getWapeDir(),
-  ];
+  const candidateDirs = [join(homedir(), "Downloads"), homedir(), getWapeDir()];
 
   const pattern = /m[sg]?gstore.*db.*crypt.*/i;
   const discoveredMap = new Map<string, string>();
@@ -47,7 +50,11 @@ export function discoverMsgstoreBackups(): string[] {
           const fullPath = join(dir, entry);
           try {
             const stats = statSync(fullPath);
-            if (stats.isFile() && stats.size > 0 && !discoveredMap.has(fullPath)) {
+            if (
+              stats.isFile() &&
+              stats.size > 0 &&
+              !discoveredMap.has(fullPath)
+            ) {
               discoveredMap.set(fullPath, fullPath);
             }
           } catch (_err) {
@@ -88,10 +95,18 @@ export async function resolveBackupCredentials(options?: {
 
     if (discoveredList.length === 1) {
       const discovered = discoveredList[0];
-      console.log(pc.cyan(`🔎 Discovered WhatsApp backup file at: ${pc.bold(discovered)}`));
+      console.log(
+        pc.cyan(
+          `🔎 Discovered WhatsApp backup file at: ${pc.bold(discovered)}`,
+        ),
+      );
       backupPath = discovered;
     } else if (discoveredList.length > 1) {
-      console.log(pc.cyan(`\n🔎 Discovered ${discoveredList.length} WhatsApp backup files:\n`));
+      console.log(
+        pc.cyan(
+          `\n🔎 Discovered ${discoveredList.length} WhatsApp backup files:\n`,
+        ),
+      );
       const picked = await select<string>({
         message: "Select WhatsApp backup file to use:",
         choices: discoveredList.map((path) => {
@@ -111,7 +126,7 @@ export async function resolveBackupCredentials(options?: {
 
   if (!backupPath || !existsSync(backupPath)) {
     throw new Error(
-      `WhatsApp backup database not found. Provide a path via '--backup <path>' or set 'backupPath' in ~/.wape/config.json, or place your msgstore.db.crypt* file in ~/Downloads, ~, or ~/.wape.`
+      `WhatsApp backup database not found. Provide a path via '--backup <path>' or set 'backupPath' in ~/.wape/config.json, or place your msgstore.db.crypt* file in ~/Downloads, ~, or ~/.wape.`,
     );
   }
 
@@ -144,7 +159,11 @@ export async function ensureDecryptedDatabase(options?: {
   let key = backupKey;
 
   if (!key) {
-    console.log(pc.yellow(`\n🔑 WhatsApp backup decryption key is required for:\n${pc.bold(backupPath)}\n`));
+    console.log(
+      pc.yellow(
+        `\n🔑 WhatsApp backup decryption key is required for:\n${pc.bold(backupPath)}\n`,
+      ),
+    );
     key = await input({
       message: "Enter your 64-character WhatsApp decryption key (hex string):",
       validate: (val) => {
@@ -162,7 +181,7 @@ export async function ensureDecryptedDatabase(options?: {
     console.log(pc.green(`✅ Decryption key saved to ~/.wape/config.json\n`));
   }
 
-  // Generate a distinct cache filename in ~/.wape/
+  // Generate a distinct cache filename in OS temp directory
   const stats = statSync(backupPath);
   const hash = createHash("sha256")
     .update(`${backupPath}:${stats.size}:${stats.mtimeMs}:${key}`)
@@ -171,10 +190,14 @@ export async function ensureDecryptedDatabase(options?: {
 
   const outputPath = options?.customOutputPath
     ? resolve(options.customOutputPath)
-    : join(getWapeDir(), `cache_msgstore_${hash}.db`);
+    : join(tmpdir(), `wape_msgstore_${hash}.db`);
 
   // Check if decrypted file already exists, is valid, and matches cache
-  if (existsSync(outputPath) && statSync(outputPath).size > 0 && isSqliteDatabase(outputPath)) {
+  if (
+    existsSync(outputPath) &&
+    statSync(outputPath).size > 0 &&
+    isSqliteDatabase(outputPath)
+  ) {
     return outputPath;
   }
 
@@ -194,7 +217,10 @@ export async function ensureDecryptedDatabase(options?: {
   const foundWadecrypt = candidateWadecrypt.find((p) => existsSync(p));
   const foundPython = candidatePython.find((p) => existsSync(p));
 
-  function runProcess(cmd: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  function runProcess(
+    cmd: string,
+    args: string[],
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     return new Promise((res) => {
       const child = spawn(cmd, args);
       let stdout = "";
@@ -218,18 +244,31 @@ export async function ensureDecryptedDatabase(options?: {
     });
   }
 
-  let result: { exitCode: number; stdout: string; stderr: string } | null = null;
+  let result: { exitCode: number; stdout: string; stderr: string } | null =
+    null;
 
   if (foundWadecrypt) {
     result = await runProcess(foundWadecrypt, [key, backupPath, outputPath]);
   } else if (foundPython) {
-    result = await runProcess(foundPython, ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]);
+    result = await runProcess(foundPython, [
+      "-m",
+      "wa_crypt_tools.wadecrypt",
+      key,
+      backupPath,
+      outputPath,
+    ]);
   } else {
     // Fallback to global wadecrypt / python3 / python / py
     const globalCommands: [string, string[]][] = [
       ["wadecrypt", [key, backupPath, outputPath]],
-      ["python3", ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]],
-      ["python", ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]],
+      [
+        "python3",
+        ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath],
+      ],
+      [
+        "python",
+        ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath],
+      ],
       ["py", ["-m", "wa_crypt_tools.wadecrypt", key, backupPath, outputPath]],
     ];
 
@@ -247,19 +286,25 @@ export async function ensureDecryptedDatabase(options?: {
 
     if (!result) {
       throw new Error(
-        `Failed to find or execute wadecrypt / python. Ensure python and wa-crypt-tools are installed in .venv or on your PATH: ${String(lastError)}`
+        `Failed to find or execute wadecrypt / python. Ensure python and wa-crypt-tools are installed in .venv or on your PATH: ${String(lastError)}`,
       );
     }
   }
 
   if (result.exitCode !== 0) {
     throw new Error(
-      `Decryption failed with exit code ${result.exitCode}.\nStdout: ${result.stdout}\nStderr: ${result.stderr}`
+      `Decryption failed with exit code ${result.exitCode}.\nStdout: ${result.stdout}\nStderr: ${result.stderr}`,
     );
   }
 
-  if (!existsSync(outputPath) || statSync(outputPath).size === 0 || !isSqliteDatabase(outputPath)) {
-    throw new Error(`Decrypted output file was not generated or is invalid at: ${outputPath}`);
+  if (
+    !existsSync(outputPath) ||
+    statSync(outputPath).size === 0 ||
+    !isSqliteDatabase(outputPath)
+  ) {
+    throw new Error(
+      `Decrypted output file was not generated or is invalid at: ${outputPath}`,
+    );
   }
 
   return outputPath;
