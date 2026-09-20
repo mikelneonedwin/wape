@@ -334,4 +334,82 @@ describe("Group and Community Extractor", () => {
     const family = groups.find((g) => g.subject === "Family Group");
     expect(family?.communityName).toBeNull();
   });
+
+  it("dynamically resolves all storage paths relative to custom WAPE_HOME", async () => {
+    const originalHome = process.env.WAPE_HOME;
+    const customHome = join(tmpdir(), "custom_wape_env_test_" + Date.now());
+    process.env.WAPE_HOME = customHome;
+
+    const {
+      getWapeDir,
+      getWapeConfigFile,
+      getWapeListsDir,
+      getMainListPath,
+      getLockListPath,
+      getRoomsConfigFile,
+      getSavedLinksFile,
+      resolveListFilePath,
+    } = await import("../src/services/wape-store");
+
+    expect(getWapeDir()).toBe(customHome);
+    expect(getWapeConfigFile()).toBe(join(customHome, "config.json"));
+    expect(getWapeListsDir()).toBe(join(customHome, "lists"));
+    expect(getMainListPath()).toBe(join(customHome, "lists", "main.txt"));
+    expect(getLockListPath()).toBe(join(customHome, "lists", "lock.txt"));
+    expect(getRoomsConfigFile()).toBe(join(customHome, "rooms.json"));
+    expect(getSavedLinksFile()).toBe(join(customHome, "links.json"));
+    expect(resolveListFilePath("leads")).toBe(
+      join(customHome, "lists", "leads.txt"),
+    );
+    expect(resolveListFilePath("main")).toBe(
+      join(customHome, "lists", "main.txt"),
+    );
+
+    const { rmSync, existsSync } = await import("node:fs");
+    if (existsSync(customHome)) {
+      rmSync(customHome, { recursive: true, force: true });
+    }
+    process.env.WAPE_HOME = originalHome;
+  });
+
+  it("resolves one-off backup credentials and environment variables without overwriting config.json", async () => {
+    const { resolveBackupCredentials } =
+      await import("../src/services/decryptor");
+    const { getAppConfig, saveAppConfig } =
+      await import("../src/services/wape-store");
+
+    // Baseline config
+    saveAppConfig({ key: "saved-config-key-111" });
+
+    // Dummy db file for discovery/path test
+    const dummyDb = join(tmpdir(), "oneoff_test_db_" + Date.now() + ".db");
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    writeFileSync(dummyDb, Buffer.from("SQLite format 3\0"));
+
+    // 1. One-off options override config
+    const creds1 = await resolveBackupCredentials({
+      backupPath: dummyDb,
+      backupKey: "one-off-hex-key-999",
+    });
+    expect(creds1.backupKey).toBe("one-off-hex-key-999");
+    expect(creds1.backupPath).toBe(dummyDb);
+
+    // Config remains unchanged
+    expect(getAppConfig().key).toBe("saved-config-key-111");
+
+    // 2. WAPE_KEY and WAPE_BACKUP env vars override config
+    process.env.WAPE_KEY = "env-hex-key-777";
+    process.env.WAPE_BACKUP = dummyDb;
+
+    const creds2 = await resolveBackupCredentials();
+    expect(creds2.backupKey).toBe("env-hex-key-777");
+    expect(creds2.backupPath).toBe(dummyDb);
+
+    // Config still remains unchanged
+    expect(getAppConfig().key).toBe("saved-config-key-111");
+
+    delete process.env.WAPE_KEY;
+    delete process.env.WAPE_BACKUP;
+    unlinkSync(dummyDb);
+  });
 });

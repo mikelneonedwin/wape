@@ -12,7 +12,12 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import pc from "picocolors";
-import { getAppConfig, getWapeDir, saveAppConfig } from "./wape-store";
+import {
+  getAppConfig,
+  getWapeConfigFile,
+  getWapeDir,
+  saveAppConfig,
+} from "./wape-store";
 
 /**
  * Checks if a file is already an unencrypted SQLite database by inspecting its header magic bytes.
@@ -30,7 +35,7 @@ export function isSqliteDatabase(filePath: string): boolean {
 }
 
 /**
- * Scans directories (Downloads, user home, ~/.wape) for rogue WhatsApp mgstore backup files matching:
+ * Scans directories (Downloads, user home, ~/.wape or WAPE_HOME) for rogue WhatsApp mgstore backup files matching:
  * "mgstore" -> optional content -> "db" -> optional content -> "crypt" -> optional content (case-insensitive).
  * Also accepts "msgstore" variation.
  */
@@ -79,7 +84,7 @@ export function discoverMsgstoreBackup(): string | null {
 }
 
 /**
- * Resolves the backup path and decryption key from options, ~/.wape/config.json, or auto-discovery with interactive selection.
+ * Resolves the backup path and decryption key from options, WAPE_BACKUP / WAPE_KEY env vars, config.json, or auto-discovery with interactive selection.
  */
 export async function resolveBackupCredentials(options?: {
   backupPath?: string;
@@ -88,7 +93,8 @@ export async function resolveBackupCredentials(options?: {
   const appConfig = getAppConfig();
 
   // 1. Resolve Backup Path
-  let backupPath = options?.backupPath ?? appConfig.backupPath;
+  let backupPath =
+    options?.backupPath ?? process.env.WAPE_BACKUP ?? appConfig.backupPath;
 
   if (!backupPath || !existsSync(backupPath)) {
     const discoveredList = discoverMsgstoreBackups();
@@ -126,12 +132,16 @@ export async function resolveBackupCredentials(options?: {
 
   if (!backupPath || !existsSync(backupPath)) {
     throw new Error(
-      `WhatsApp backup database not found. Provide a path via '--backup <path>' or set 'backupPath' in ~/.wape/config.json, or place your msgstore.db.crypt* file in ~/Downloads, ~, or ~/.wape.`,
+      `WhatsApp backup database not found. Provide a path via '--backup <path>', set WAPE_BACKUP env, or set 'backupPath' in ${getWapeConfigFile()}, or place your msgstore.db.crypt* file in ~/Downloads, ~, or ${getWapeDir()}.`,
     );
   }
 
   // 2. Resolve Decryption Key
-  const backupKey = options?.backupKey ?? appConfig.key;
+  const backupKey =
+    options?.backupKey ??
+    process.env.WAPE_KEY ??
+    process.env.WAPE_DECRYPTION_KEY ??
+    appConfig.key;
 
   return {
     backupPath: resolve(backupPath),
@@ -148,6 +158,7 @@ export async function ensureDecryptedDatabase(options?: {
   backupPath?: string;
   backupKey?: string;
   customOutputPath?: string;
+  saveKeyToConfig?: boolean;
 }): Promise<string> {
   const { backupPath, backupKey } = await resolveBackupCredentials(options);
 
@@ -177,8 +188,12 @@ export async function ensureDecryptedDatabase(options?: {
     });
 
     key = key.trim();
-    saveAppConfig({ key });
-    console.log(pc.green(`✅ Decryption key saved to ~/.wape/config.json\n`));
+    if (options?.saveKeyToConfig !== false) {
+      saveAppConfig({ key });
+      console.log(
+        pc.green(`✅ Decryption key saved to ${getWapeConfigFile()}\n`),
+      );
+    }
   }
 
   // Generate a distinct cache filename in OS temp directory

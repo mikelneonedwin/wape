@@ -36,6 +36,9 @@ import {
   getRoomById,
   getRooms,
   getSavedLinks,
+  getSavedLinksFile,
+  getWapeConfigFile,
+  getWapeListsDir,
   renameRoomId,
   resolveListFilePath,
   saveAppConfig,
@@ -134,22 +137,32 @@ async function executeGroupExport(
       options.roomContext.targetList ?? `${options.roomContext.id}.txt`;
     targetFilePath = resolveListFilePath(roomListFile);
   } else {
+    const knownLists = getAllKnownLists();
     const listChoices = [
       {
         name: `Main File (${pc.bold(getMainListPath())})`,
         value: getMainListPath(),
-        description: "Primary global contacts list in ~/.wape/lists/main.txt",
+        description: `Primary global contacts list in ${getMainListPath()}`,
       },
       {
         name: `Lock File (${pc.bold(getLockListPath())})`,
         value: getLockListPath(),
-        description:
-          "Secondary/lock global contacts list in ~/.wape/lists/lock.txt",
+        description: `Secondary/lock global contacts list in ${getLockListPath()}`,
       },
+      ...knownLists
+        .filter((l) => !l.isGlobal)
+        .map((l) => {
+          const contacts = readContactsFromFile(l.path);
+          return {
+            name: `${pc.bold(l.name)} ${pc.yellow(`(${contacts.size.toLocaleString()} contacts)`)}`,
+            value: l.path,
+            description: l.path,
+          };
+        }),
       {
-        name: "Custom List (specify file name in ~/.wape/lists/)",
+        name: `Custom List (specify file name in ${getWapeListsDir()}/)`,
         value: "__custom__",
-        description: "Create or append to a custom list file",
+        description: `Create or append to a custom list file in ${getWapeListsDir()}/`,
       },
     ];
 
@@ -205,7 +218,7 @@ async function scanSingleRoom(
   db: ReturnType<typeof getDatabase>,
   groups: Awaited<ReturnType<typeof fetchAllGroups>>,
   room: Room,
-  opts?: { main?: boolean; lock?: boolean },
+  opts?: { main?: boolean; lock?: boolean; targetList?: string },
 ) {
   const groupMap = new Map(groups.map((g) => [g.jidRowId, g]));
   const activeJids: number[] = [];
@@ -249,7 +262,8 @@ async function scanSingleRoom(
   }
 
   let forcedList: string | undefined;
-  if (opts?.main) forcedList = getMainListPath();
+  if (opts?.targetList) forcedList = resolveListFilePath(opts.targetList);
+  else if (opts?.main) forcedList = getMainListPath();
   else if (opts?.lock) forcedList = getLockListPath();
 
   await executeGroupExport(db, activeJids, labels, {
@@ -271,6 +285,10 @@ program
     "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
   )
   .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .option(
+    "-t, --target-list <nameOrPath>",
+    "Direct output to a specific list file or name",
+  )
   .option("--main", "Force output to global main list")
   .option("--lock", "Force output to global lock list")
   .action(
@@ -279,6 +297,7 @@ program
       options?: {
         backup?: string;
         key?: string;
+        targetList?: string;
         main?: boolean;
         lock?: boolean;
       },
@@ -340,6 +359,7 @@ program
           await scanSingleRoom(db, groups, roomToScan, {
             main: options?.main,
             lock: options?.lock,
+            targetList: options?.targetList,
           });
         } else {
           const targetJids = await searchCheckbox({
@@ -360,7 +380,9 @@ program
           const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
 
           let forcedList: string | undefined;
-          if (options?.main) {
+          if (options?.targetList) {
+            forcedList = resolveListFilePath(options.targetList);
+          } else if (options?.main) {
             forcedList = getMainListPath();
           } else if (options?.lock) {
             forcedList = getLockListPath();
@@ -380,6 +402,302 @@ program
       }
     },
   );
+
+/**
+ * One-off Command Group
+ */
+const oneoffCmd = program
+  .command("oneoff [target]")
+  .description(
+    "Scan a one-off WhatsApp backup database using a one-off decryption key without touching config.json",
+  )
+  .requiredOption(
+    "-k, --key <key>",
+    "Decryption key for the one-off backup (required)",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
+  )
+  .option(
+    "-t, --target-list <nameOrPath>",
+    "Direct output to a specific list file or name",
+  )
+  .option("--main", "Force output to global main list")
+  .option("--lock", "Force output to global lock list")
+  .action(
+    async (
+      target?: string,
+      options?: {
+        key: string;
+        backup?: string;
+        targetList?: string;
+        main?: boolean;
+        lock?: boolean;
+      },
+    ) => {
+      try {
+        console.log(
+          pc.cyan("\n📱 wape - One-Off WhatsApp Backup Contact Scanner\n"),
+        );
+        console.log(
+          pc.dim("Decrypting / preparing one-off SQLite database..."),
+        );
+        const { db, groups } = await loadDbAndGroups(
+          options?.backup,
+          options?.key,
+        );
+
+        if (groups.length === 0) {
+          console.log(pc.yellow("No group chats found in the backup."));
+          return;
+        }
+
+        let forcedList: string | undefined;
+        if (options?.targetList) {
+          forcedList = resolveListFilePath(options.targetList);
+        } else if (options?.main) {
+          forcedList = getMainListPath();
+        } else if (options?.lock) {
+          forcedList = getLockListPath();
+        }
+
+        let roomToScan: Room | null = null;
+
+        if (target) {
+          roomToScan = getRoomById(target);
+          if (!roomToScan) {
+            console.error(
+              pc.red(
+                `Room with ID '${target}' not found. Use 'wape rooms list' to see rooms.`,
+              ),
+            );
+            process.exit(1);
+          }
+        }
+
+        if (roomToScan) {
+          await scanSingleRoom(db, groups, roomToScan, {
+            main: options?.main,
+            lock: options?.lock,
+            targetList: options?.targetList,
+          });
+        } else {
+          const targetJids = await searchCheckbox({
+            message:
+              "Select group chats (Type to filter, Space to check, Enter to submit):",
+            pageSize: 16,
+            required: true,
+            choices: groups.map((g) => ({
+              name: formatGroupLabel(g),
+              value: g.jidRowId,
+              category: g.communityName ?? "Standalone Groups",
+            })),
+          });
+
+          const selectedGroups = groups.filter((g) =>
+            targetJids.includes(g.jidRowId),
+          );
+          const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
+
+          await executeGroupExport(db, targetJids, selectedLabels, {
+            forcedTargetList: forcedList,
+          });
+        }
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
+oneoffCmd
+  .command("scan [target]")
+  .description(
+    "Scan groups from a one-off WhatsApp backup and export Nigerian contacts",
+  )
+  .requiredOption(
+    "-k, --key <key>",
+    "Decryption key for the one-off backup (required)",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
+  )
+  .option(
+    "-t, --target-list <nameOrPath>",
+    "Direct output to a specific list file or name",
+  )
+  .option("--main", "Force output to global main list")
+  .option("--lock", "Force output to global lock list")
+  .action(
+    async (
+      target?: string,
+      options?: {
+        key: string;
+        backup?: string;
+        targetList?: string;
+        main?: boolean;
+        lock?: boolean;
+      },
+    ) => {
+      try {
+        console.log(
+          pc.cyan("\n📱 wape - One-Off WhatsApp Backup Contact Scanner\n"),
+        );
+        console.log(
+          pc.dim("Decrypting / preparing one-off SQLite database..."),
+        );
+        const { db, groups } = await loadDbAndGroups(
+          options?.backup,
+          options?.key,
+        );
+
+        if (groups.length === 0) {
+          console.log(pc.yellow("No group chats found in the backup."));
+          return;
+        }
+
+        let forcedList: string | undefined;
+        if (options?.targetList) {
+          forcedList = resolveListFilePath(options.targetList);
+        } else if (options?.main) {
+          forcedList = getMainListPath();
+        } else if (options?.lock) {
+          forcedList = getLockListPath();
+        }
+
+        let roomToScan: Room | null = null;
+
+        if (target) {
+          roomToScan = getRoomById(target);
+          if (!roomToScan) {
+            console.error(
+              pc.red(
+                `Room with ID '${target}' not found. Use 'wape rooms list' to see rooms.`,
+              ),
+            );
+            process.exit(1);
+          }
+        }
+
+        if (roomToScan) {
+          await scanSingleRoom(db, groups, roomToScan, {
+            main: options?.main,
+            lock: options?.lock,
+            targetList: options?.targetList,
+          });
+        } else {
+          const targetJids = await searchCheckbox({
+            message:
+              "Select group chats (Type to filter, Space to check, Enter to submit):",
+            pageSize: 16,
+            required: true,
+            choices: groups.map((g) => ({
+              name: formatGroupLabel(g),
+              value: g.jidRowId,
+              category: g.communityName ?? "Standalone Groups",
+            })),
+          });
+
+          const selectedGroups = groups.filter((g) =>
+            targetJids.includes(g.jidRowId),
+          );
+          const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
+
+          await executeGroupExport(db, targetJids, selectedLabels, {
+            forcedTargetList: forcedList,
+          });
+        }
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
+oneoffCmd
+  .command("links")
+  .description(
+    "Extract all WhatsApp group invite links from a one-off backup, pick links, record them, and print them",
+  )
+  .requiredOption(
+    "-k, --key <key>",
+    "Decryption key for the one-off backup (required)",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
+  )
+  .action(async (options: { key: string; backup?: string }) => {
+    try {
+      const { db } = await loadDbAndGroups(options.backup, options.key);
+      const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+
+      if (allExtractedLinks.length === 0) {
+        console.log(
+          pc.yellow("\nNo WhatsApp group invite links found in backup.\n"),
+        );
+        return;
+      }
+
+      const recordedLinks = new Set(getSavedLinks());
+      const availableLinks = allExtractedLinks.filter(
+        (link) => !recordedLinks.has(link),
+      );
+
+      if (availableLinks.length === 0) {
+        console.log(
+          pc.green(
+            `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
+          ),
+        );
+        return;
+      }
+
+      console.log(
+        pc.cyan(
+          `\n🔗 WhatsApp Group Invite Links (${availableLinks.length} new available / ${allExtractedLinks.length} total in backup):\n`,
+        ),
+      );
+
+      const selectedLinks = await searchCheckbox({
+        message:
+          "Select WhatsApp group links to record & output (Space to check, Enter to submit):",
+        pageSize: 18,
+        choices: availableLinks.map((link) => ({
+          name: link,
+          value: link,
+        })),
+      });
+
+      if (selectedLinks.length === 0) {
+        console.log(pc.yellow("\nNo links were selected.\n"));
+        return;
+      }
+
+      saveLinks(selectedLinks);
+
+      for (const link of selectedLinks) {
+        console.log(link);
+      }
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
 
 /**
  * Room Management Commands
@@ -505,12 +823,14 @@ roomCmd
     if (res.listRenamed) {
       console.log(
         pc.dim(
-          `📁 Contact list file renamed from ~/.wape/lists/${oldId}.txt to ~/.wape/lists/${newId}.txt\n`,
+          `📁 Contact list file renamed from ${resolveListFilePath(`${oldId}.txt`)} to ${resolveListFilePath(`${newId}.txt`)}\n`,
         ),
       );
     } else {
       console.log(
-        pc.dim(`📁 List path updated to ~/.wape/lists/${newId}.txt\n`),
+        pc.dim(
+          `📁 List path updated to ${resolveListFilePath(`${newId}.txt`)}\n`,
+        ),
       );
     }
   });
@@ -843,7 +1163,9 @@ program
         const globalSummary = getGlobalInventory();
 
         console.log(
-          pc.cyan("\n📊 wape Global Lists Stats Summary (~/.wape/lists/)\n"),
+          pc.cyan(
+            `\n📊 wape Global Lists Stats Summary (${getWapeListsDir()}/)\n`,
+          ),
         );
         console.log("=".repeat(65));
         console.log(
@@ -870,66 +1192,76 @@ program
         const target = resolveTargetToList(targets[0]);
         const contacts = readContactsFromFile(target.filePath);
 
-        console.log(pc.cyan("\n📊 Single List Stats\n"));
+        console.log(pc.cyan("\n" + "=".repeat(65)));
+        console.log(
+          pc.bold(pc.cyan(`📊 STATS: ${target.label.toUpperCase()}`)),
+        );
         console.log("=".repeat(65));
         console.log(
-          `${pc.bold(target.label + ":")} ${pc.yellow(contacts.size.toLocaleString())} contacts`,
+          `${pc.bold("Target File:")}         ${pc.green(target.filePath)}`,
+        );
+        console.log(
+          `${pc.bold("Total Unique Contacts:")} ${pc.magenta(contacts.size.toLocaleString())}`,
         );
         console.log("=".repeat(65) + "\n");
         return;
       }
 
-      if (targets.length === 2 && targets[0] && targets[1]) {
-        const targetA = resolveTargetToList(targets[0]);
-        const targetB = resolveTargetToList(targets[1]);
+      // Comparison across multiple targets
+      const filePaths = targets.map((t) => resolveTargetToList(t).filePath);
+      const labels = targets.map((t) => resolveTargetToList(t).label);
 
-        const stats = getInventoryStats(
-          targetA.filePath,
-          targetB.filePath,
-          targetA.label,
-          targetB.label,
-        );
+      if (filePaths.length === 2 && filePaths[0] && filePaths[1]) {
+        const stats = getInventoryStats(filePaths[0], filePaths[1]);
+        const [labelA, labelB] = labels;
 
-        console.log(pc.cyan("\n📊 Comparative Stats Analysis\n"));
+        console.log(pc.cyan("\n" + "=".repeat(65)));
+        console.log(pc.bold(pc.cyan("📊 TWO-WAY LIST COMPARISON")));
         console.log("=".repeat(65));
         console.log(
-          `${pc.bold(stats.labelA + ":")} ${pc.yellow(stats.countA.toLocaleString())}`,
+          `  ${pc.bold(labelA?.padEnd(28) ?? "List A")}: ${pc.yellow(stats.countA.toLocaleString().padStart(8))} contacts ${pc.dim(`(${filePaths[0]})`)}`,
         );
         console.log(
-          `${pc.bold(stats.labelB + ":")} ${pc.yellow(stats.countB.toLocaleString())}`,
+          `  ${pc.bold(labelB?.padEnd(28) ?? "List B")}: ${pc.yellow(stats.countB.toLocaleString().padStart(8))} contacts ${pc.dim(`(${filePaths[1]})`)}`,
         );
         console.log("-".repeat(65));
         console.log(
-          `${pc.bold("Common Contacts (Overlap):")}       ${pc.cyan(stats.commonCount.toLocaleString())}`,
+          `  ${pc.bold(pc.green("Common to Both (Intersection):"))}  ${pc.bold(pc.green(stats.commonCount.toLocaleString().padStart(8)))} contacts`,
         );
         console.log(
-          `${pc.bold("Unique Combined Total (Union):")}   ${pc.green(pc.bold(stats.unionCount.toLocaleString()))}`,
+          `  ${pc.bold(pc.magenta("Total Unique Combined (Union):"))}  ${pc.bold(pc.magenta(stats.unionCount.toLocaleString().padStart(8)))} contacts`,
         );
         console.log("=".repeat(65) + "\n");
         return;
       }
 
-      // Multi-target summary (>2 targets)
+      // Multi-way comparison (3+ lists)
+      const common = getCommonContacts(filePaths);
+      const allUnique = new Set<string>();
+      filePaths.forEach((f) => {
+        const contacts = readContactsFromFile(f);
+        contacts.forEach((c) => allUnique.add(c));
+      });
+
+      console.log(pc.cyan("\n" + "=".repeat(65)));
       console.log(
-        pc.cyan(
-          `\n📊 Multi-Target Stats Breakdown (${targets.length} targets)\n`,
+        pc.bold(
+          pc.cyan(`📊 MULTI-LIST COMPARISON (${filePaths.length} lists)`),
         ),
       );
       console.log("=".repeat(65));
-      const combinedUnion = new Set<string>();
-
-      targets.forEach((target) => {
-        const resolved = resolveTargetToList(target);
-        const contacts = readContactsFromFile(resolved.filePath);
-        for (const c of contacts) combinedUnion.add(c);
+      filePaths.forEach((f, idx) => {
+        const contacts = readContactsFromFile(f);
         console.log(
-          `${pc.white(resolved.label.padEnd(45))} ${pc.yellow(contacts.size.toLocaleString().padStart(10))}`,
+          `  ${pc.bold((labels[idx] ?? "").padEnd(28))}: ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts ${pc.dim(`(${f})`)}`,
         );
       });
-
       console.log("-".repeat(65));
       console.log(
-        `${pc.bold(pc.green("Combined Unique Total:"))} ${pc.bold(pc.green(combinedUnion.size.toLocaleString()))}`,
+        `  ${pc.bold(pc.green("Common to ALL Selected Lists:"))}    ${pc.bold(pc.green(common.length.toLocaleString().padStart(8)))} contacts`,
+      );
+      console.log(
+        `  ${pc.bold(pc.magenta("Total Unique Combined (Union):"))}  ${pc.bold(pc.magenta(allUnique.size.toLocaleString().padStart(8)))} contacts`,
       );
       console.log("=".repeat(65) + "\n");
     } catch (error) {
@@ -941,6 +1273,7 @@ program
       process.exit(1);
     }
   });
+
 /**
  * Patch Command
  */
@@ -949,8 +1282,8 @@ program
   .description(
     "Patch/import contacts from external text file(s) into global lists (--main, --lock) or a room/list target",
   )
-  .option("--main", "Patch into global main list (~/.wape/lists/main.txt)")
-  .option("--lock", "Patch into global lock list (~/.wape/lists/lock.txt)")
+  .option("--main", `Patch into global main list (${getMainListPath()})`)
+  .option("--lock", `Patch into global lock list (${getLockListPath()})`)
   .action(
     (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
       try {
@@ -1107,7 +1440,7 @@ program
 program
   .command("links")
   .description(
-    "Extract all WhatsApp group invite links from all chats, pick links, record them to ~/.wape/links.json, and print them",
+    `Extract all WhatsApp group invite links from all chats, pick links, record them to ${getSavedLinksFile()}, and print them`,
   )
   .action(async () => {
     try {
@@ -1129,7 +1462,7 @@ program
       if (availableLinks.length === 0) {
         console.log(
           pc.green(
-            `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ~/.wape/links.json.\n`,
+            `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
           ),
         );
         return;
@@ -1178,12 +1511,12 @@ program
 program
   .command("lists")
   .description(
-    "List all known contact files in ~/.wape/lists/ and their current contact counts",
+    `List all known contact files in ${getWapeListsDir()}/ and their current contact counts`,
   )
   .action(() => {
     const knownLists = getAllKnownLists();
     console.log(
-      pc.cyan("\n📁 wape Contact Lists Repository (~/.wape/lists/)\n"),
+      pc.cyan(`\n📁 wape Contact Lists Repository (${getWapeListsDir()}/)\n`),
     );
     console.log("=".repeat(65));
     knownLists.forEach((l) => {
@@ -1200,14 +1533,14 @@ program
  */
 const configCmd = program
   .command("config")
-  .description("View or update ~/.wape/config.json settings");
+  .description(`View or update ${getWapeConfigFile()} settings`);
 
 configCmd
   .command("get")
-  .description("View current ~/.wape/config.json configuration")
+  .description(`View current ${getWapeConfigFile()} configuration`)
   .action(() => {
     const cfg = getAppConfig();
-    console.log(pc.cyan("\n⚙️  wape Configuration (~/.wape/config.json)\n"));
+    console.log(pc.cyan(`\n⚙️  wape Configuration (${getWapeConfigFile()})\n`));
     console.log("=".repeat(65));
     console.log(
       `${pc.bold("Key:")}         ${cfg.key ? pc.yellow(cfg.key.slice(0, 12) + "..." + cfg.key.slice(-6)) : pc.dim("(not set)")}`,
@@ -1235,7 +1568,7 @@ configCmd
     if (opts.backup) update.backupPath = opts.backup.trim();
     saveAppConfig(update);
     console.log(
-      pc.green("\n✅ Configuration updated in ~/.wape/config.json\n"),
+      pc.green(`\n✅ Configuration updated in ${getWapeConfigFile()}\n`),
     );
   });
 

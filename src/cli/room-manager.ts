@@ -175,7 +175,7 @@ export async function createRoomInteractive(
 
   console.log(
     pc.green(
-      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${room.groupJidRowIds.length} groups! (List: ~/.wape/lists/${targetList})\n`,
+      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${room.groupJidRowIds.length} groups! (List: ${resolveListFilePath(targetList)})\n`,
     ),
   );
   return room;

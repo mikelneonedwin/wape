@@ -84,7 +84,7 @@ export function getLockListPath(): string {
   return join(getWapeListsDir(), "lock.txt");
 }
 
-function getRoomsConfigFile(): string {
+export function getRoomsConfigFile(): string {
   return join(getWapeDir(), "rooms.json");
 }
 

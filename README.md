@@ -125,17 +125,37 @@ Extracts and sieves unique Nigerian phone numbers from selected groups or config
 # Interactive scan (choose from a configured room or pick ad-hoc groups)
 wape scan
 
-# Scan directly from a room by ID (saves to ~/.wape/lists/<room-id>.txt)
+# Scan directly from a room by ID (saves to lists/<room-id>.txt)
 wape scan <room-id>
 
-# Scan and force output to the global main or lock list (~/.wape/lists/main.txt or lock.txt)
+# Scan and direct output to a specific list file or global lists
+wape scan -t leads.txt
 wape scan <room-id> --main
 wape scan <room-id> --lock
 ```
 
 ---
 
-### 4. Compare Contacts (Intersection) (`wape compare`)
+### 4. One-Off Databases & Keys (`wape oneoff`)
+
+Scan temporary or one-off WhatsApp backup databases using a dedicated one-off decryption key without touching or overwriting `config.json`. The `--key` (`-k`) option is required, while `--backup` (`-b`) is optional (falls back to auto-discovery if omitted).
+
+```bash
+# Scan groups from a one-off backup and select destination interactively
+wape oneoff -k <64-char-hex-key> -b /path/to/one-off.crypt15
+
+# One-off scan using backup auto-discovery, targeting an existing list
+wape oneoff -k <64-char-hex-key> -t leads
+wape oneoff -k <64-char-hex-key> --main
+wape oneoff -k <64-char-hex-key> --lock
+
+# Extract group invite links from a one-off backup
+wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
+```
+
+---
+
+### 5. Compare Contacts (Intersection) (`wape compare`)
 
 Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more lists simultaneously.
 
@@ -149,11 +169,11 @@ wape compare <target1> <target2> [target3...]
 
 ---
 
-### 5. Stats & Union Breakdown (`wape stats`)
+### 6. Stats & Union Breakdown (`wape stats`)
 
 Computes aggregated stats totals across lists and rooms:
 
-- **0 arguments**: Global overview of all lists in `~/.wape/lists/` and grand unique union.
+- **0 arguments**: Global overview of all lists in `lists/` and grand unique union.
 - **1 argument**: Contact count and stats for that specific list or room.
 - **2 arguments**: Comparative analysis (totals, overlap, and union).
 - **>2 arguments**: Aggregates all targets into a combined unique total.
@@ -174,15 +194,15 @@ wape stats <target1> <target2> <target3>
 
 ---
 
-### 6. Patch & Import Contacts (`wape patch`)
+### 7. Patch & Import Contacts (`wape patch`)
 
 Import and merge contacts from external text file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
 ```bash
-# Patch external text file(s) into global main list (~/.wape/lists/main.txt)
+# Patch external text file(s) into global main list
 wape patch --main leads.txt extra.txt
 
-# Patch external text file(s) into global lock list (~/.wape/lists/lock.txt)
+# Patch external text file(s) into global lock list
 wape patch --lock locked_numbers.txt
 
 # Patch external text file(s) into a specific room or custom list target
@@ -191,7 +211,7 @@ wape patch <target> file1.txt file2.txt
 
 ---
 
-### 7. Print Contacts (`wape print`)
+### 8. Print Contacts (`wape print`)
 
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
@@ -201,9 +221,9 @@ wape print <target>
 
 ---
 
-### 8. Contact Lists Repository (`wape lists`)
+### 9. Contact Lists Repository (`wape lists`)
 
-Shows all contact list files currently managed in `~/.wape/lists/` and their contact counts.
+Shows all contact list files currently managed in the active lists directory and their contact counts.
 
 ```bash
 wape lists
@@ -211,9 +231,9 @@ wape lists
 
 ---
 
-### 9. WhatsApp Group Links Extractor (`wape links`)
+### 10. WhatsApp Group Links Extractor (`wape links`)
 
-Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `~/.wape/links.json`, presents new links in an alphabetical checklist to pick, records the chosen links into `~/.wape/links.json`, and prints them one per line to the terminal.
+Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, presents new links in an alphabetical checklist to pick, records the chosen links into `links.json`, and prints them one per line to the terminal.
 
 ```bash
 wape links
@@ -221,9 +241,17 @@ wape links
 
 ---
 
-## 📁 Storage Architecture (`~/.wape`)
+## 📁 Storage Architecture & Custom Directory (`WAPE_HOME`)
 
-- **`~/.wape/config.json`**: Global configuration (decryption key and optional backup path).
-- **`~/.wape/rooms.json`**: Persistent storage for room definitions and group mappings.
-- **`~/.wape/links.json`**: Persistent storage for recorded WhatsApp group invite links.
-- **`~/.wape/lists/`**: Default repository for custom, global (`main.txt`, `lock.txt`), and room-level (`<id>.txt`) contact list files.
+By default, `wape` stores all data inside `~/.wape`. You can override this to any custom directory by setting the `WAPE_HOME` environment variable:
+
+```bash
+export WAPE_HOME="/path/to/custom/wape/dir"
+```
+
+Directory structure:
+
+- **`config.json`**: Global configuration (decryption key and optional default backup path).
+- **`rooms.json`**: Persistent storage for room definitions and group mappings.
+- **`links.json`**: Persistent storage for recorded WhatsApp group invite links.
+- **`lists/`**: Default repository for custom, global (`main.txt`, `lock.txt`), and room-level (`<id>.txt`) contact list files.
