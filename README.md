@@ -95,8 +95,11 @@ wape rooms path <id>
 # Patch/import contacts from external text file(s) into a room's list
 wape rooms patch <id> <file1.txt> [file2.txt...]
 
-# Edit groups within a room
-wape rooms edit [id]
+# Add new groups to an existing room (filters out groups already in this room or other rooms)
+wape rooms add [id]
+
+# Remove groups from an existing room
+wape rooms remove [id]
 
 # Rename a room ID and migrate its contact list file
 wape rooms rename <oldId> <newId>

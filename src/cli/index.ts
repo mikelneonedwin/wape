@@ -21,10 +21,11 @@ import {
 } from "../services/file-manager";
 import { formatPhoneNumber } from "../services/phone";
 import {
+  addGroupsToRoomInteractive,
   createRoomInteractive,
-  editRoomInteractive,
   printRoomDetail,
   printRoomsTable,
+  removeGroupsFromRoomInteractive,
 } from "./room-manager";
 import { searchCheckbox } from "./search-checkbox";
 import {
@@ -789,12 +790,29 @@ roomCmd
   });
 
 roomCmd
-  .command("edit [id]")
-  .description("Edit groups of a room")
+  .command("add [id]")
+  .description("Add new groups to an existing room")
   .action(async (id?: string) => {
     try {
       const { groups } = await loadDbAndGroups();
-      await editRoomInteractive(groups, id);
+      await addGroupsToRoomInteractive(groups, id);
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+roomCmd
+  .command("remove [id]")
+  .description("Remove groups from an existing room")
+  .action(async (id?: string) => {
+    try {
+      const { groups } = await loadDbAndGroups();
+      await removeGroupsFromRoomInteractive(groups, id);
     } catch (error) {
       console.error(
         pc.red(
