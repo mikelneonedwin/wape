@@ -130,6 +130,132 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
   console.log("=".repeat(75) + "\n");
 }
 
+export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
+  const groupMap = groups ? new Map(groups.map((g) => [g.jidRowId, g])) : null;
+
+  if (room.groupJidRowIds.length === 0) {
+    console.log(pc.yellow(`\nNo groups configured in room '${room.id}'.\n`));
+    return;
+  }
+
+  console.log(
+    pc.cyan(
+      `\n📋 Groups in room '${pc.bold(room.id)}' (${room.groupJidRowIds.length} groups):\n`,
+    ),
+  );
+
+  interface GroupItem {
+    jid: number;
+    subject: string;
+    communityName: string | null;
+    participantCount?: number;
+    isMissing?: boolean;
+  }
+
+  const items: GroupItem[] = room.groupJidRowIds.map((jid, idx) => {
+    const originalName =
+      room.groupNames && room.groupNames[idx]
+        ? room.groupNames[idx]
+        : `JID ${jid}`;
+
+    if (groupMap) {
+      const g = groupMap.get(jid);
+      if (g) {
+        return {
+          jid,
+          subject: g.subject,
+          communityName: g.communityName,
+          participantCount: g.participantCount,
+          isMissing: false,
+        };
+      }
+      return {
+        jid,
+        subject: originalName,
+        communityName: null,
+        isMissing: true,
+      };
+    }
+
+    return {
+      jid,
+      subject: originalName,
+      communityName: null,
+      isMissing: false,
+    };
+  });
+
+  // Group items: map from community name (or null for standalone) to list of items
+  const communityMap = new Map<string, GroupItem[]>();
+  const standaloneItems: GroupItem[] = [];
+
+  for (const item of items) {
+    if (item.communityName) {
+      const list = communityMap.get(item.communityName) ?? [];
+      list.push(item);
+      communityMap.set(item.communityName, list);
+    } else {
+      standaloneItems.push(item);
+    }
+  }
+
+  // Sort communities alphabetically
+  const sortedCommunityNames = Array.from(communityMap.keys()).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" }),
+  );
+
+  let globalIndex = 1;
+
+  // Print grouped by community
+  for (const commName of sortedCommunityNames) {
+    const commItems = communityMap.get(commName)!;
+    commItems.sort((a, b) =>
+      a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
+    );
+
+    console.log(`  ${pc.cyan(pc.bold(`🏛️  ${commName}`))}`);
+    for (const item of commItems) {
+      const num = pc.dim(globalIndex.toString().padStart(3, " ") + ".");
+      globalIndex++;
+      const countLabel =
+        item.participantCount !== undefined
+          ? ` ${pc.dim(`(${item.participantCount} members)`)}`
+          : "";
+      console.log(`    ${num} └─ ${item.subject}${countLabel}`);
+    }
+    console.log("");
+  }
+
+  // Print standalone groups
+  if (standaloneItems.length > 0) {
+    standaloneItems.sort((a, b) =>
+      a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
+    );
+
+    if (sortedCommunityNames.length > 0) {
+      console.log(`  ${pc.bold(pc.dim("🌐 Standalone Groups"))}`);
+    }
+
+    for (const item of standaloneItems) {
+      const num = pc.dim(globalIndex.toString().padStart(3, " ") + ".");
+      globalIndex++;
+
+      if (item.isMissing) {
+        console.log(
+          `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(item.subject))} ${pc.dim(`(JID: ${item.jid})`)}`,
+        );
+      } else {
+        const countLabel =
+          item.participantCount !== undefined
+            ? ` ${pc.dim(`(${item.participantCount} members)`)}`
+            : "";
+        console.log(`  ${num} ${item.subject}${countLabel}`);
+      }
+    }
+    console.log("");
+  }
+}
+
 export async function createRoomInteractive(
   groups: GroupSummary[],
   id: string,

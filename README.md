@@ -89,6 +89,9 @@ wape rooms new <id>
 # View room details, included groups, and exited/missing status
 wape rooms info [id]
 
+# Print out only the groups configured in a room
+wape rooms groups [id]
+
 # Print absolute path to a room's contact list file
 wape rooms path <id>
 
@@ -145,12 +148,12 @@ Scan temporary or one-off WhatsApp backup databases using a dedicated one-off de
 
 ```bash
 # Scan groups from a one-off backup and select destination interactively
-wape oneoff -k <64-char-hex-key> -b /path/to/one-off.crypt15
+wape oneoff scan -k <64-char-hex-key> -b /path/to/one-off.crypt15
 
 # One-off scan using backup auto-discovery, targeting an existing list
-wape oneoff -k <64-char-hex-key> -t leads
-wape oneoff -k <64-char-hex-key> --main
-wape oneoff -k <64-char-hex-key> --lock
+wape oneoff scan -k <64-char-hex-key> -t leads
+wape oneoff scan -k <64-char-hex-key> --main
+wape oneoff scan -k <64-char-hex-key> --lock
 
 # Extract group invite links from a one-off backup
 wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15

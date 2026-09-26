@@ -42,6 +42,15 @@ export const groupParticipantUsers = sqliteTable("group_participant_user", {
   addTimestamp: integer("add_timestamp"),
 });
 
+export const groupPastParticipantUsers = sqliteTable(
+  "group_past_participant_user",
+  {
+    id: integer("_id").primaryKey({ autoIncrement: true }),
+    groupJidRowId: integer("group_jid_row_id").notNull(),
+    userJidRowId: integer("user_jid_row_id").notNull(),
+  },
+);
+
 export const messageSystemWithGroupNodes = sqliteTable(
   "message_system_with_group_nodes",
   {
@@ -63,6 +72,12 @@ export const jidRelations = relations(jids, ({ one, many }) => ({
   }),
   groupParticipationsAsGroup: many(groupParticipantUsers, {
     relationName: "participantGroupJid",
+  }),
+  groupPastParticipantMemberships: many(groupPastParticipantUsers, {
+    relationName: "pastParticipantUserJid",
+  }),
+  groupPastParticipationsAsGroup: many(groupPastParticipantUsers, {
+    relationName: "pastParticipantGroupJid",
   }),
   lidToPhoneMap: one(jidMaps, {
     fields: [jids.id],
@@ -93,6 +108,7 @@ export const chatRelations = relations(chats, ({ one, many }) => ({
     references: [jids.id],
   }),
   participants: many(groupParticipantUsers),
+  pastParticipants: many(groupPastParticipantUsers),
 }));
 
 export const groupParticipantUserRelations = relations(
@@ -111,6 +127,26 @@ export const groupParticipantUserRelations = relations(
       fields: [groupParticipantUsers.userJidRowId],
       references: [jids.id],
       relationName: "participantUserJid",
+    }),
+  }),
+);
+
+export const groupPastParticipantUserRelations = relations(
+  groupPastParticipantUsers,
+  ({ one }) => ({
+    groupChat: one(chats, {
+      fields: [groupPastParticipantUsers.groupJidRowId],
+      references: [chats.jidRowId],
+    }),
+    groupJid: one(jids, {
+      fields: [groupPastParticipantUsers.groupJidRowId],
+      references: [jids.id],
+      relationName: "pastParticipantGroupJid",
+    }),
+    userJid: one(jids, {
+      fields: [groupPastParticipantUsers.userJidRowId],
+      references: [jids.id],
+      relationName: "pastParticipantUserJid",
     }),
   }),
 );

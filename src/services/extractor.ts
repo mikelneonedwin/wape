@@ -3,6 +3,7 @@ import type { AppDatabase } from "../db";
 import {
   chats,
   groupParticipantUsers,
+  groupPastParticipantUsers,
   messages,
   messageSystemWithGroupNodes,
 } from "../db/schema";
@@ -198,26 +199,22 @@ export async function extractNigerianNumbersFromGroups(
     return new Set<string>();
   }
 
-  const participants = await db.query.groupParticipantUsers.findMany({
-    where: inArray(groupParticipantUsers.groupJidRowId, groupJidRowIds),
-    with: {
-      userJid: {
-        with: {
-          lidToPhoneMap: {
-            with: {
-              phoneJid: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
   const uniqueNigerianNumbers = new Set<string>();
 
-  for (const participant of participants) {
+  const processParticipant = (participant: {
+    userJid?: {
+      server: string;
+      user: string;
+      lidToPhoneMap?: {
+        phoneJid?: {
+          server: string;
+          user: string;
+        } | null;
+      } | null;
+    } | null;
+  }) => {
     const userJid = participant.userJid;
-    if (!userJid) continue;
+    if (!userJid) return;
 
     let candidateNumber: string | null = null;
 
@@ -236,6 +233,48 @@ export async function extractNigerianNumbersFromGroups(
         uniqueNigerianNumbers.add(normalized);
       }
     }
+  };
+
+  const currentParticipants = await db.query.groupParticipantUsers.findMany({
+    where: inArray(groupParticipantUsers.groupJidRowId, groupJidRowIds),
+    with: {
+      userJid: {
+        with: {
+          lidToPhoneMap: {
+            with: {
+              phoneJid: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  for (const participant of currentParticipants) {
+    processParticipant(participant);
+  }
+
+  try {
+    const pastParticipants = await db.query.groupPastParticipantUsers.findMany({
+      where: inArray(groupPastParticipantUsers.groupJidRowId, groupJidRowIds),
+      with: {
+        userJid: {
+          with: {
+            lidToPhoneMap: {
+              with: {
+                phoneJid: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    for (const participant of pastParticipants) {
+      processParticipant(participant);
+    }
+  } catch {
+    // Graceful fallback if group_past_participant_user table is not present in older databases
   }
 
   return uniqueNigerianNumbers;

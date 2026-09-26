@@ -10,6 +10,7 @@ import {
   extractNigerianNumbersFromGroups,
   extractWhatsAppGroupLinks,
   fetchAllGroups,
+  type GroupSummary,
 } from "../services/extractor";
 import {
   getCommonContacts,
@@ -24,6 +25,7 @@ import {
   addGroupsToRoomInteractive,
   createRoomInteractive,
   printRoomDetail,
+  printRoomGroups,
   printRoomsTable,
   removeGroupsFromRoomInteractive,
 } from "./room-manager";
@@ -408,113 +410,13 @@ program
  * One-off Command Group
  */
 const oneoffCmd = program
-  .command("oneoff [target]")
+  .command("oneoff")
   .description(
     "Scan a one-off WhatsApp backup database using a one-off decryption key without touching config.json",
   )
-  .requiredOption(
-    "-k, --key <key>",
-    "Decryption key for the one-off backup (required)",
-  )
-  .option(
-    "-b, --backup <path>",
-    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
-  )
-  .option(
-    "-t, --target-list <nameOrPath>",
-    "Direct output to a specific list file or name",
-  )
-  .option("--main", "Force output to global main list")
-  .option("--lock", "Force output to global lock list")
-  .action(
-    async (
-      target?: string,
-      options?: {
-        key: string;
-        backup?: string;
-        targetList?: string;
-        main?: boolean;
-        lock?: boolean;
-      },
-    ) => {
-      try {
-        console.log(
-          pc.cyan("\n📱 wape - One-Off WhatsApp Backup Contact Scanner\n"),
-        );
-        console.log(
-          pc.dim("Decrypting / preparing one-off SQLite database..."),
-        );
-        const { db, groups } = await loadDbAndGroups(
-          options?.backup,
-          options?.key,
-        );
-
-        if (groups.length === 0) {
-          console.log(pc.yellow("No group chats found in the backup."));
-          return;
-        }
-
-        let forcedList: string | undefined;
-        if (options?.targetList) {
-          forcedList = resolveListFilePath(options.targetList);
-        } else if (options?.main) {
-          forcedList = getMainListPath();
-        } else if (options?.lock) {
-          forcedList = getLockListPath();
-        }
-
-        let roomToScan: Room | null = null;
-
-        if (target) {
-          roomToScan = getRoomById(target);
-          if (!roomToScan) {
-            console.error(
-              pc.red(
-                `Room with ID '${target}' not found. Use 'wape rooms list' to see rooms.`,
-              ),
-            );
-            process.exit(1);
-          }
-        }
-
-        if (roomToScan) {
-          await scanSingleRoom(db, groups, roomToScan, {
-            main: options?.main,
-            lock: options?.lock,
-            targetList: options?.targetList,
-          });
-        } else {
-          const targetJids = await searchCheckbox({
-            message:
-              "Select group chats (Type to filter, Space to check, Enter to submit):",
-            pageSize: 16,
-            required: true,
-            choices: groups.map((g) => ({
-              name: formatGroupLabel(g),
-              value: g.jidRowId,
-              category: g.communityName ?? "Standalone Groups",
-            })),
-          });
-
-          const selectedGroups = groups.filter((g) =>
-            targetJids.includes(g.jidRowId),
-          );
-          const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
-
-          await executeGroupExport(db, targetJids, selectedLabels, {
-            forcedTargetList: forcedList,
-          });
-        }
-      } catch (error) {
-        console.error(
-          pc.red(
-            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-        process.exit(1);
-      }
-    },
-  );
+  .action(() => {
+    oneoffCmd.outputHelp();
+  });
 
 oneoffCmd
   .command("scan [target]")
@@ -762,6 +664,64 @@ roomCmd
 
       const { groups } = await loadDbAndGroups();
       printRoomDetail(room, groups);
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+roomCmd
+  .command("groups [id]")
+  .description("Print out the WhatsApp groups configured in a room")
+  .action(async (id?: string) => {
+    try {
+      const rooms = getRooms();
+      if (rooms.length === 0) {
+        console.log(
+          pc.yellow(
+            "\nNo rooms found. Use 'wape rooms new <id>' to create one.\n",
+          ),
+        );
+        return;
+      }
+
+      let room: Room | null = null;
+      if (id) {
+        room = getRoomById(id);
+        if (!room) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+            ),
+          );
+          process.exit(1);
+        }
+      } else {
+        const pickedRoomId = await select<string>({
+          message: "Select room to view groups:",
+          choices: rooms.map((r) => ({
+            name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
+            value: r.id,
+          })),
+        });
+        room = getRoomById(pickedRoomId);
+      }
+
+      if (!room) return;
+
+      let groups: GroupSummary[] | undefined;
+      try {
+        const res = await loadDbAndGroups();
+        groups = res.groups;
+      } catch {
+        // Backup / db might not be configured, will fall back to stored group names in room
+      }
+
+      printRoomGroups(room, groups);
     } catch (error) {
       console.error(
         pc.red(

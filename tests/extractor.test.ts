@@ -412,4 +412,59 @@ describe("Group and Community Extractor", () => {
     delete process.env.WAPE_BACKUP;
     unlinkSync(dummyDb);
   });
+
+  it("extracts phone numbers from both current and past group participants", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { extractNigerianNumbersFromGroups } =
+      await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT NOT NULL, server TEXT NOT NULL, agent INTEGER, device INTEGER, type INTEGER, raw_string TEXT);
+      CREATE TABLE jid_map (lid_row_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, sort_id INTEGER);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER UNIQUE, subject TEXT, group_type INTEGER, hidden INTEGER, archived INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER, pending INTEGER, add_timestamp INTEGER);
+      CREATE TABLE group_past_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL);
+    `);
+
+    // Insert phone JIDs
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (1, '2348011111111', 's.whatsapp.net')`,
+    );
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (2, '2348022222222', 's.whatsapp.net')`,
+    );
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (3, '2348033333333', 's.whatsapp.net')`,
+    );
+    // LID JID for user 4 mapped to phone JID 5
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (4, '123456789012345', 'lid')`,
+    );
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (5, '2348044444444', 's.whatsapp.net')`,
+    );
+    sqlite.run(`INSERT INTO jid_map (lid_row_id, jid_row_id) VALUES (4, 5)`);
+
+    // Group 100:
+    // Current participants: user 1, user 4 (lid mapped to 5)
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (100, 1), (100, 4)`,
+    );
+    // Past participants: user 2, user 3
+    sqlite.run(
+      `INSERT INTO group_past_participant_user (group_jid_row_id, user_jid_row_id) VALUES (100, 2), (100, 3)`,
+    );
+
+    const db = drizzle({ client: sqlite, schema });
+    const numbers = await extractNigerianNumbersFromGroups(db, [100]);
+
+    expect(numbers.size).toBe(4);
+    expect(numbers.has("+2348011111111")).toBe(true);
+    expect(numbers.has("+2348022222222")).toBe(true);
+    expect(numbers.has("+2348033333333")).toBe(true);
+    expect(numbers.has("+2348044444444")).toBe(true);
+  });
 });
