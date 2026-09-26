@@ -4,13 +4,16 @@ import {
   chats,
   groupParticipantUsers,
   groupPastParticipantUsers,
+  jids,
   messages,
   messageSystemWithGroupNodes,
 } from "../db/schema";
 import { normalizeNigerianPhoneNumber } from "./phone";
+import { saveRoom, type Room } from "./wape-store";
 
 export interface GroupSummary {
   jidRowId: number;
+  jidString: string;
   subject: string;
   groupType: number;
   communityName: string | null;
@@ -26,6 +29,9 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
   const groupRows = await db
     .select({
       jidRowId: chats.jidRowId,
+      jidUser: jids.user,
+      jidServer: jids.server,
+      jidRawString: jids.rawString,
       subject: chats.subject,
       groupType: chats.groupType,
       participantCount: sql<number>`count(${groupParticipantUsers.id})`.mapWith(
@@ -37,8 +43,16 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
       groupParticipantUsers,
       sql`${chats.jidRowId} = ${groupParticipantUsers.groupJidRowId}`,
     )
+    .leftJoin(jids, sql`${chats.jidRowId} = ${jids.id}`)
     .where(sql`${chats.subject} IS NOT NULL AND ${chats.subject} != ''`)
-    .groupBy(chats.jidRowId, chats.subject, chats.groupType)
+    .groupBy(
+      chats.jidRowId,
+      jids.user,
+      jids.server,
+      jids.rawString,
+      chats.subject,
+      chats.groupType,
+    )
     .orderBy(sql`${chats.subject} COLLATE NOCASE ASC`);
 
   // 2. Query community parent / announcement chats (group_type 1 or 3)
@@ -167,8 +181,15 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
       communityName = bestComm;
     }
 
+    const jidString =
+      g.jidRawString ||
+      (g.jidUser && g.jidServer
+        ? `${g.jidUser}@${g.jidServer}`
+        : `${g.jidRowId}`);
+
     validGroups.push({
       jidRowId: g.jidRowId,
+      jidString,
       subject: cleanSubject,
       groupType,
       communityName,
@@ -189,6 +210,219 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
   });
 
   return validGroups;
+}
+
+export interface ResolvedRoomGroupItem {
+  id: string | number;
+  resolvedJidString: string | null;
+  resolvedJidRowId: number | null;
+  subject: string;
+  communityName: string | null;
+  participantCount?: number;
+  isMissing: boolean;
+}
+
+export interface ResolvedRoomResult {
+  activeJidRowIds: number[];
+  activeJidStrings: string[];
+  resolvedItems: ResolvedRoomGroupItem[];
+  missingCount: number;
+  activeCount: number;
+  hasMigrated: boolean;
+}
+
+/**
+ * Resolves groups within a room against current database groups.
+ * Migrates legacy numeric rowIds to globally unique WhatsApp JID strings ('...@g.us')
+ * when an exact row+subject match or unique subject match is found.
+ * Silently persists upgraded rooms back to ~/.wape/rooms.json.
+ */
+export function resolveRoomGroups(
+  room: Room,
+  groups?: GroupSummary[],
+): ResolvedRoomResult {
+  const ids: (string | number)[] = room.groupIds ?? room.groupJidRowIds ?? [];
+  const names = room.groupNames ?? [];
+
+  if (!groups || groups.length === 0) {
+    const fallbackItems: ResolvedRoomGroupItem[] = ids.map((id, idx) => ({
+      id,
+      resolvedJidString: typeof id === "string" ? id : null,
+      resolvedJidRowId: typeof id === "number" ? id : null,
+      subject: names[idx] || (typeof id === "string" ? id : `JID ${id}`),
+      communityName: null,
+      isMissing: false,
+    }));
+    const activeJidRowIds = fallbackItems
+      .map((i) => i.resolvedJidRowId)
+      .filter((id): id is number => id !== null);
+    const activeJidStrings = fallbackItems
+      .map((i) => i.resolvedJidString)
+      .filter((s): s is string => s !== null);
+
+    return {
+      activeJidRowIds,
+      activeJidStrings,
+      resolvedItems: fallbackItems,
+      missingCount: 0,
+      activeCount: ids.length,
+      hasMigrated: false,
+    };
+  }
+
+  const groupsByJidString = new Map<string, GroupSummary>();
+  const groupsByRowId = new Map<number, GroupSummary>();
+  const groupsBySubject = new Map<string, GroupSummary[]>();
+
+  for (const g of groups) {
+    if (g.jidString) {
+      groupsByJidString.set(g.jidString.toLowerCase(), g);
+    }
+    groupsByRowId.set(g.jidRowId, g);
+    const cleanSub = g.subject.trim().toLowerCase();
+    const list = groupsBySubject.get(cleanSub) ?? [];
+    list.push(g);
+    groupsBySubject.set(cleanSub, list);
+  }
+
+  let hasMigrated = false;
+  const newGroupIds: (string | number)[] = [...ids];
+  const newGroupNames: string[] = [...names];
+
+  const resolvedItems: ResolvedRoomGroupItem[] = [];
+  const activeJidRowIds: number[] = [];
+  const activeJidStrings: string[] = [];
+
+  for (let idx = 0; idx < ids.length; idx++) {
+    const rawId = ids[idx];
+    const storedName = names[idx];
+
+    if (typeof rawId === "string") {
+      const match = groupsByJidString.get(rawId.toLowerCase());
+      if (match) {
+        resolvedItems.push({
+          id: rawId,
+          resolvedJidString: match.jidString,
+          resolvedJidRowId: match.jidRowId,
+          subject: match.subject,
+          communityName: match.communityName,
+          participantCount: match.participantCount,
+          isMissing: false,
+        });
+        activeJidRowIds.push(match.jidRowId);
+        activeJidStrings.push(match.jidString);
+        if (storedName !== match.subject) {
+          newGroupNames[idx] = match.subject;
+          hasMigrated = true;
+        }
+      } else {
+        resolvedItems.push({
+          id: rawId,
+          resolvedJidString: rawId,
+          resolvedJidRowId: null,
+          subject: storedName || rawId,
+          communityName: null,
+          isMissing: true,
+        });
+      }
+    } else if (typeof rawId === "number") {
+      const rowMatch = groupsByRowId.get(rawId);
+      const isRowAndSubjectMatch =
+        rowMatch &&
+        (!storedName ||
+          rowMatch.subject.trim().toLowerCase() ===
+            storedName.trim().toLowerCase());
+
+      if (isRowAndSubjectMatch && rowMatch) {
+        // Reliably resolved via exact row ID and subject match
+        resolvedItems.push({
+          id: rowMatch.jidString,
+          resolvedJidString: rowMatch.jidString,
+          resolvedJidRowId: rowMatch.jidRowId,
+          subject: rowMatch.subject,
+          communityName: rowMatch.communityName,
+          participantCount: rowMatch.participantCount,
+          isMissing: false,
+        });
+        activeJidRowIds.push(rowMatch.jidRowId);
+        activeJidStrings.push(rowMatch.jidString);
+
+        newGroupIds[idx] = rowMatch.jidString;
+        newGroupNames[idx] = rowMatch.subject;
+        hasMigrated = true;
+      } else {
+        // Check unique subject match
+        const subjectMatches = storedName
+          ? groupsBySubject.get(storedName.trim().toLowerCase())
+          : undefined;
+
+        if (
+          subjectMatches &&
+          subjectMatches.length === 1 &&
+          subjectMatches[0]
+        ) {
+          // Reliably resolved via unique subject match
+          const subMatch = subjectMatches[0];
+          resolvedItems.push({
+            id: subMatch.jidString,
+            resolvedJidString: subMatch.jidString,
+            resolvedJidRowId: subMatch.jidRowId,
+            subject: subMatch.subject,
+            communityName: subMatch.communityName,
+            participantCount: subMatch.participantCount,
+            isMissing: false,
+          });
+          activeJidRowIds.push(subMatch.jidRowId);
+          activeJidStrings.push(subMatch.jidString);
+
+          newGroupIds[idx] = subMatch.jidString;
+          newGroupNames[idx] = subMatch.subject;
+          hasMigrated = true;
+        } else if (rowMatch) {
+          // Ambiguous / unreliably resolved: keep rowId as number, do not migrate ID
+          resolvedItems.push({
+            id: rawId,
+            resolvedJidString: null,
+            resolvedJidRowId: rowMatch.jidRowId,
+            subject: storedName || rowMatch.subject,
+            communityName: rowMatch.communityName,
+            participantCount: rowMatch.participantCount,
+            isMissing: false,
+          });
+          activeJidRowIds.push(rowMatch.jidRowId);
+        } else {
+          // Missing
+          resolvedItems.push({
+            id: rawId,
+            resolvedJidString: null,
+            resolvedJidRowId: null,
+            subject: storedName || `JID ${rawId}`,
+            communityName: null,
+            isMissing: true,
+          });
+        }
+      }
+    }
+  }
+
+  if (hasMigrated) {
+    room.groupIds = newGroupIds;
+    room.groupJidRowIds = newGroupIds;
+    room.groupNames = newGroupNames;
+    saveRoom(room);
+  }
+
+  const missingCount = resolvedItems.filter((i) => i.isMissing).length;
+  const activeCount = resolvedItems.length - missingCount;
+
+  return {
+    activeJidRowIds,
+    activeJidStrings,
+    resolvedItems,
+    missingCount,
+    activeCount,
+    hasMigrated,
+  };
 }
 
 export async function extractNigerianNumbersFromGroups(

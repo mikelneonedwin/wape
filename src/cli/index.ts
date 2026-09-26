@@ -10,6 +10,7 @@ import {
   extractNigerianNumbersFromGroups,
   extractWhatsAppGroupLinks,
   fetchAllGroups,
+  resolveRoomGroups,
   type GroupSummary,
 } from "../services/extractor";
 import {
@@ -61,12 +62,16 @@ program
 function formatGroupLabel(group: {
   subject: string;
   communityName: string | null;
-  participantCount: number;
+  participantCount?: number;
 }): string {
+  const countLabel =
+    group.participantCount !== undefined
+      ? ` ${pc.dim(`(${group.participantCount} members)`)}`
+      : "";
   if (group.communityName) {
-    return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject} ${pc.dim(`(${group.participantCount} members)`)}`;
+    return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject}${countLabel}`;
   }
-  return `${pc.dim("[Standalone]")} • ${group.subject} ${pc.dim(`(${group.participantCount} members)`)}`;
+  return `${pc.dim("[Standalone]")} • ${group.subject}${countLabel}`;
 }
 
 async function loadDbAndGroups(backupPath?: string, backupKey?: string) {
@@ -223,24 +228,14 @@ async function scanSingleRoom(
   room: Room,
   opts?: { main?: boolean; lock?: boolean; targetList?: string },
 ) {
-  const groupMap = new Map(groups.map((g) => [g.jidRowId, g]));
-  const activeJids: number[] = [];
-  const labels: string[] = [];
-  const missingNames: string[] = [];
-
-  room.groupJidRowIds.forEach((jid, idx) => {
-    const g = groupMap.get(jid);
-    if (g) {
-      activeJids.push(jid);
-      labels.push(formatGroupLabel(g));
-    } else {
-      const name =
-        room.groupNames && room.groupNames[idx]
-          ? room.groupNames[idx]
-          : `JID ${jid}`;
-      missingNames.push(name);
-    }
-  });
+  const resolved = resolveRoomGroups(room, groups);
+  const activeJids = resolved.activeJidRowIds;
+  const labels = resolved.resolvedItems
+    .filter((i) => !i.isMissing)
+    .map((i) => formatGroupLabel(i));
+  const missingNames = resolved.resolvedItems
+    .filter((i) => i.isMissing)
+    .map((i) => i.subject);
 
   console.log(
     pc.cyan(
@@ -349,10 +344,13 @@ program
           if (scanMode === "room") {
             const pickedRoomId = await select<string>({
               message: "Select room to scan:",
-              choices: rooms.map((r) => ({
-                name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
-                value: r.id,
-              })),
+              choices: rooms.map((r) => {
+                const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+                return {
+                  name: `${r.id} ${pc.dim(`(${count} groups)`)}`,
+                  value: r.id,
+                };
+              }),
             });
             roomToScan = getRoomById(pickedRoomId);
           }
@@ -652,10 +650,13 @@ roomCmd
       } else {
         const pickedRoomId = await select<string>({
           message: "Select room to inspect:",
-          choices: rooms.map((r) => ({
-            name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
-            value: r.id,
-          })),
+          choices: rooms.map((r) => {
+            const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+            return {
+              name: `${r.id} ${pc.dim(`(${count} groups)`)}`,
+              value: r.id,
+            };
+          }),
         });
         room = getRoomById(pickedRoomId);
       }
@@ -703,10 +704,13 @@ roomCmd
       } else {
         const pickedRoomId = await select<string>({
           message: "Select room to view groups:",
-          choices: rooms.map((r) => ({
-            name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
-            value: r.id,
-          })),
+          choices: rooms.map((r) => {
+            const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+            return {
+              name: `${r.id} ${pc.dim(`(${count} groups)`)}`,
+              value: r.id,
+            };
+          }),
         });
         room = getRoomById(pickedRoomId);
       }

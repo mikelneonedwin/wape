@@ -156,7 +156,7 @@ describe("Room Store and Management", () => {
     saveRoom(testRoom);
     const found = getRoomById("test-room-1");
     expect(found).not.toBeNull();
-    expect(found?.groupJidRowIds.length).toBe(2);
+    expect(found?.groupJidRowIds?.length).toBe(2);
 
     // Create a mock list file
     const oldPath = resolveListFilePath("test-room-1.txt");
@@ -270,6 +270,11 @@ describe("Group and Community Extractor", () => {
       CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER, pending INTEGER, add_timestamp INTEGER);
       CREATE TABLE message_system_with_group_nodes (message_row_id INTEGER PRIMARY KEY, group_jid_row_id INTEGER, group_node_type INTEGER, group_subject TEXT, version INTEGER);
     `);
+
+    // Insert JIDs
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (100, 'tech-comm', 'g.us'), (101, 'tech-ann', 'g.us'), (200, 'frontend', 'g.us'), (300, 'backend', 'g.us'), (400, 'family', 'g.us')`,
+    );
 
     // Insert Community parent (type 1) and announcement (type 3)
     sqlite.run(
@@ -466,5 +471,85 @@ describe("Group and Community Extractor", () => {
     expect(numbers.has("+2348022222222")).toBe(true);
     expect(numbers.has("+2348033333333")).toBe(true);
     expect(numbers.has("+2348044444444")).toBe(true);
+  });
+
+  it("silently migrates legacy group rowIds to unique WhatsApp JIDs when reliably resolvable", async () => {
+    const { resolveRoomGroups } = await import("../src/services/extractor");
+    const { getRoomById, saveRoom } =
+      await import("../src/services/wape-store");
+
+    const availableGroups = [
+      {
+        jidRowId: 10,
+        jidString: "120363011111111111@g.us",
+        subject: "Exact Match Group",
+        groupType: 0,
+        communityName: null,
+        participantCount: 15,
+      },
+      {
+        jidRowId: 20, // Row ID 20 in new DB
+        jidString: "120363022222222222@g.us",
+        subject: "Displaced Subject Match",
+        groupType: 0,
+        communityName: null,
+        participantCount: 8,
+      },
+      {
+        jidRowId: 30,
+        jidString: "120363033333333333@g.us",
+        subject: "Duplicate Name",
+        groupType: 0,
+        communityName: null,
+        participantCount: 5,
+      },
+      {
+        jidRowId: 31,
+        jidString: "120363044444444444@g.us",
+        subject: "Duplicate Name",
+        groupType: 0,
+        communityName: null,
+        participantCount: 12,
+      },
+    ];
+
+    const testRoom = {
+      id: "migration-test-room",
+      // Entry 0: 10 + "Exact Match Group" -> should resolve to 120363011111111111@g.us
+      // Entry 1: 999 (old row ID) + "Displaced Subject Match" -> should resolve to 120363022222222222@g.us
+      // Entry 2: 888 (old row ID) + "Duplicate Name" -> ambiguous, should remain 888
+      // Entry 3: "120363011111111111@g.us" -> already string JID
+      groupIds: [10, 999, 888, "120363011111111111@g.us"],
+      groupNames: [
+        "Exact Match Group",
+        "Displaced Subject Match",
+        "Duplicate Name",
+        "Exact Match Group",
+      ],
+      targetList: "migration-test-room.txt",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    saveRoom(testRoom);
+
+    const result = resolveRoomGroups(testRoom, availableGroups);
+
+    expect(result.hasMigrated).toBe(true);
+    expect(result.activeCount).toBe(3); // Entry 0, 1, 3 active
+    expect(result.missingCount).toBe(1); // Entry 2 missing (ambiguous row 888 not in DB)
+
+    // Verify room in-memory migration
+    expect(testRoom.groupIds[0]).toBe("120363011111111111@g.us");
+    expect(testRoom.groupIds[1]).toBe("120363022222222222@g.us");
+    expect(testRoom.groupIds[2]).toBe(888); // Unreliable match kept as number
+    expect(testRoom.groupIds[3]).toBe("120363011111111111@g.us");
+
+    // Verify persisted room in rooms.json
+    const persisted = getRoomById("migration-test-room");
+    expect(persisted).not.toBeNull();
+    expect(persisted?.groupIds?.[0]).toBe("120363011111111111@g.us");
+    expect(persisted?.groupIds?.[1]).toBe("120363022222222222@g.us");
+    expect(persisted?.groupIds?.[2]).toBe(888);
   });
 });

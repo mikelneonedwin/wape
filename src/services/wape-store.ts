@@ -12,7 +12,8 @@ import { isAbsolute, join, resolve } from "node:path";
 export interface Room {
   id: string;
   name?: string;
-  groupJidRowIds: number[];
+  groupIds?: (string | number)[];
+  groupJidRowIds?: (string | number)[];
   groupNames: string[];
   targetList?: string | null;
   createdAt: number;
@@ -88,6 +89,17 @@ export function getRoomsConfigFile(): string {
   return join(getWapeDir(), "rooms.json");
 }
 
+interface RawRoom {
+  id: string;
+  name?: string;
+  groupIds?: (string | number)[];
+  groupJidRowIds?: (string | number)[];
+  groupNames?: string[];
+  targetList?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export function getRooms(): Room[] {
   const file = getRoomsConfigFile();
   if (!existsSync(file)) {
@@ -95,11 +107,23 @@ export function getRooms(): Room[] {
   }
   try {
     const raw = readFileSync(file, "utf-8");
-    const parsed = JSON.parse(raw) as { rooms?: Room[] } | Room[];
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-    return parsed.rooms ?? [];
+    const parsed = JSON.parse(raw) as { rooms?: RawRoom[] } | RawRoom[];
+    const list: RawRoom[] = Array.isArray(parsed)
+      ? parsed
+      : (parsed.rooms ?? []);
+    return list.map((r) => {
+      const ids: (string | number)[] = r.groupIds ?? r.groupJidRowIds ?? [];
+      return {
+        id: r.id,
+        name: r.name,
+        groupIds: ids,
+        groupJidRowIds: ids,
+        groupNames: r.groupNames ?? [],
+        targetList: r.targetList,
+        createdAt: r.createdAt ?? Date.now(),
+        updatedAt: r.updatedAt ?? Date.now(),
+      };
+    });
   } catch {
     return [];
   }
@@ -112,9 +136,17 @@ export interface RoomsConfigFile {
 
 export function saveRooms(rooms: Room[]): void {
   const file = getRoomsConfigFile();
+  const normalizedRooms = rooms.map((r) => {
+    const ids = r.groupIds ?? r.groupJidRowIds ?? [];
+    return {
+      ...r,
+      groupIds: ids,
+      groupJidRowIds: ids,
+    };
+  });
   const config: RoomsConfigFile = {
     version: "1.0.0",
-    rooms,
+    rooms: normalizedRooms,
   };
   writeFileSync(file, JSON.stringify(config, null, 2), "utf-8");
 }
@@ -129,10 +161,16 @@ export function saveRoom(room: Room): void {
   const index = rooms.findIndex(
     (r) => r.id.toLowerCase() === room.id.toLowerCase(),
   );
+  const ids = room.groupIds ?? room.groupJidRowIds ?? [];
+  const normalized: Room = {
+    ...room,
+    groupIds: ids,
+    groupJidRowIds: ids,
+  };
   if (index >= 0) {
-    rooms[index] = { ...room, updatedAt: Date.now() };
+    rooms[index] = { ...normalized, updatedAt: Date.now() };
   } else {
-    rooms.push({ ...room, createdAt: Date.now(), updatedAt: Date.now() });
+    rooms.push({ ...normalized, createdAt: Date.now(), updatedAt: Date.now() });
   }
   saveRooms(rooms);
 }

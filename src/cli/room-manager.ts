@@ -1,6 +1,6 @@
 import { select } from "@inquirer/prompts";
 import pc from "picocolors";
-import type { GroupSummary } from "../services/extractor";
+import { resolveRoomGroups, type GroupSummary } from "../services/extractor";
 import { readContactsFromFile } from "../services/file-manager";
 import {
   getRoomById,
@@ -14,12 +14,16 @@ import { searchCheckbox } from "./search-checkbox";
 function formatGroupLabel(group: {
   subject: string;
   communityName: string | null;
-  participantCount: number;
+  participantCount?: number;
 }): string {
+  const countLabel =
+    group.participantCount !== undefined
+      ? ` ${pc.dim(`(${group.participantCount} members)`)}`
+      : "";
   if (group.communityName) {
-    return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject} ${pc.dim(`(${group.participantCount} members)`)}`;
+    return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject}${countLabel}`;
   }
-  return `${pc.dim("[Standalone]")} • ${group.subject} ${pc.dim(`(${group.participantCount} members)`)}`;
+  return `${pc.dim("[Standalone]")} • ${group.subject}${countLabel}`;
 }
 
 export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
@@ -29,8 +33,6 @@ export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
     );
     return;
   }
-
-  const groupSet = groups ? new Set(groups.map((g) => g.jidRowId)) : null;
 
   console.log(pc.cyan("\n" + "=".repeat(75)));
   console.log(pc.bold(pc.cyan("🏠 CONFIGURED WAPE ROOMS")));
@@ -42,9 +44,9 @@ export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
     const contacts = readContactsFromFile(filePath);
     const listInfo = `${pc.green(listFile)} ${pc.yellow(`(${contacts.size} contacts)`)}`;
 
-    const missingCount = groupSet
-      ? r.groupJidRowIds.filter((id) => !groupSet.has(id)).length
-      : 0;
+    const resolved = resolveRoomGroups(r, groups);
+    const totalCount = resolved.resolvedItems.length;
+    const missingCount = resolved.missingCount;
     const missingBadge =
       missingCount > 0 ? ` ${pc.red(`(${missingCount} missing/exited)`)}` : "";
 
@@ -52,7 +54,7 @@ export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
       `  ${pc.bold((idx + 1).toString().padStart(2, " "))}. ${pc.bold(pc.white(r.id))}`,
     );
     console.log(
-      `      ${pc.dim("Groups:")} ${pc.yellow(r.groupJidRowIds.length)} groups${missingBadge} | ${pc.dim("List:")} ${listInfo}`,
+      `      ${pc.dim("Groups:")} ${pc.yellow(totalCount)} groups${missingBadge} | ${pc.dim("List:")} ${listInfo}`,
     );
     if (r.groupNames && r.groupNames.length > 0) {
       const preview = r.groupNames.slice(0, 2).join(", ");
@@ -83,47 +85,38 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
     `${pc.bold("Contacts in List:")}  ${pc.magenta(contacts.size.toLocaleString() + " contacts")}`,
   );
 
-  const groupMap = groups ? new Map(groups.map((g) => [g.jidRowId, g])) : null;
-  const activeCount = groupMap
-    ? room.groupJidRowIds.filter((id) => groupMap.has(id)).length
-    : room.groupJidRowIds.length;
-  const missingCount = room.groupJidRowIds.length - activeCount;
+  const resolved = resolveRoomGroups(room, groups);
+  const totalCount = resolved.resolvedItems.length;
+  const activeCount = resolved.activeCount;
+  const missingCount = resolved.missingCount;
 
   const countBadge =
     missingCount > 0
-      ? `${pc.cyan(room.groupJidRowIds.length.toString())} (${pc.green(`${activeCount} active`)}, ${pc.red(`${missingCount} missing/exited`)})`
-      : pc.cyan(room.groupJidRowIds.length.toString());
+      ? `${pc.cyan(totalCount.toString())} (${pc.green(`${activeCount} active`)}, ${pc.red(`${missingCount} missing/exited`)})`
+      : pc.cyan(totalCount.toString());
 
   console.log(`${pc.bold("Total Groups:")}      ${countBadge}`);
   console.log("-".repeat(75));
   console.log(pc.bold(pc.cyan("📋 INCLUDED GROUPS:")));
 
-  if (room.groupJidRowIds.length === 0) {
+  if (totalCount === 0) {
     console.log(pc.dim("  (No groups included in this room yet)"));
   } else {
-    room.groupJidRowIds.forEach((jid, idx) => {
+    resolved.resolvedItems.forEach((item, idx) => {
       const num = pc.dim((idx + 1).toString().padStart(2, " ") + ".");
-      const originalName =
-        room.groupNames && room.groupNames[idx]
-          ? room.groupNames[idx]
-          : `JID ${jid}`;
-
-      if (groupMap) {
-        const g = groupMap.get(jid);
-        if (g) {
-          console.log(`  ${num} ${formatGroupLabel(g)}`);
-          return;
+      if (groups) {
+        if (!item.isMissing) {
+          console.log(`  ${num} ${formatGroupLabel(item)}`);
+        } else {
+          console.log(
+            `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(item.subject))} ${pc.dim(`(ID: ${item.id} • Read-only)`)}`,
+          );
         }
-        // Group was exited or is missing from backup
+      } else {
         console.log(
-          `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(originalName))} ${pc.dim(`(JID: ${jid} • Read-only)`)}`,
+          `  ${num} ${pc.white(item.subject)} ${pc.dim(`(ID: ${item.id})`)}`,
         );
-        return;
       }
-
-      console.log(
-        `  ${num} ${pc.white(originalName)} ${pc.dim(`(JID: ${jid})`)}`,
-      );
     });
   }
 
@@ -131,65 +124,23 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
 }
 
 export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
-  const groupMap = groups ? new Map(groups.map((g) => [g.jidRowId, g])) : null;
+  const resolved = resolveRoomGroups(room, groups);
 
-  if (room.groupJidRowIds.length === 0) {
+  if (resolved.resolvedItems.length === 0) {
     console.log(pc.yellow(`\nNo groups configured in room '${room.id}'.\n`));
     return;
   }
 
   console.log(
     pc.cyan(
-      `\n📋 Groups in room '${pc.bold(room.id)}' (${room.groupJidRowIds.length} groups):\n`,
+      `\n📋 Groups in room '${pc.bold(room.id)}' (${resolved.resolvedItems.length} groups):\n`,
     ),
   );
 
-  interface GroupItem {
-    jid: number;
-    subject: string;
-    communityName: string | null;
-    participantCount?: number;
-    isMissing?: boolean;
-  }
+  const communityMap = new Map<string, typeof resolved.resolvedItems>();
+  const standaloneItems: typeof resolved.resolvedItems = [];
 
-  const items: GroupItem[] = room.groupJidRowIds.map((jid, idx) => {
-    const originalName =
-      room.groupNames && room.groupNames[idx]
-        ? room.groupNames[idx]
-        : `JID ${jid}`;
-
-    if (groupMap) {
-      const g = groupMap.get(jid);
-      if (g) {
-        return {
-          jid,
-          subject: g.subject,
-          communityName: g.communityName,
-          participantCount: g.participantCount,
-          isMissing: false,
-        };
-      }
-      return {
-        jid,
-        subject: originalName,
-        communityName: null,
-        isMissing: true,
-      };
-    }
-
-    return {
-      jid,
-      subject: originalName,
-      communityName: null,
-      isMissing: false,
-    };
-  });
-
-  // Group items: map from community name (or null for standalone) to list of items
-  const communityMap = new Map<string, GroupItem[]>();
-  const standaloneItems: GroupItem[] = [];
-
-  for (const item of items) {
+  for (const item of resolved.resolvedItems) {
     if (item.communityName) {
       const list = communityMap.get(item.communityName) ?? [];
       list.push(item);
@@ -199,14 +150,12 @@ export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
     }
   }
 
-  // Sort communities alphabetically
   const sortedCommunityNames = Array.from(communityMap.keys()).sort((a, b) =>
     a.localeCompare(b, undefined, { sensitivity: "base" }),
   );
 
   let globalIndex = 1;
 
-  // Print grouped by community
   for (const commName of sortedCommunityNames) {
     const commItems = communityMap.get(commName)!;
     commItems.sort((a, b) =>
@@ -226,7 +175,6 @@ export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
     console.log("");
   }
 
-  // Print standalone groups
   if (standaloneItems.length > 0) {
     standaloneItems.sort((a, b) =>
       a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
@@ -242,7 +190,7 @@ export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
 
       if (item.isMissing) {
         console.log(
-          `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(item.subject))} ${pc.dim(`(JID: ${item.jid})`)}`,
+          `  ${num} ${pc.red(`[⚠️ MISSING / EXITED]`)} ${pc.strikethrough(pc.dim(item.subject))} ${pc.dim(`(ID: ${item.id})`)}`,
         );
       } else {
         const countLabel =
@@ -272,28 +220,28 @@ export async function createRoomInteractive(
   console.log(pc.cyan(`\n🏠 Creating Room '${pc.bold(cleanId)}'\n`));
   console.log(pc.dim("Select the WhatsApp groups to include in this room:"));
 
-  const selectedJids = await searchCheckbox({
+  const selectedGroupJidStrings = await searchCheckbox<string>({
     message: `Select groups for room '${cleanId}' (Type to filter, Space to check, Enter to submit):`,
     pageSize: 16,
     required: true,
     choices: groups.map((g) => ({
       name: formatGroupLabel(g),
-      value: g.jidRowId,
+      value: g.jidString,
       category: g.communityName ?? "Standalone Groups",
     })),
   });
 
   const selectedGroups = groups.filter((g) =>
-    selectedJids.includes(g.jidRowId),
+    selectedGroupJidStrings.includes(g.jidString),
   );
   const groupNames = selectedGroups.map((g) => g.subject);
 
-  // Every room strictly has its dedicated list named after its ID
   const targetList = `${cleanId}.txt`;
 
   const room: Room = {
     id: cleanId,
-    groupJidRowIds: selectedJids,
+    groupIds: selectedGroupJidStrings,
+    groupJidRowIds: selectedGroupJidStrings,
     groupNames,
     targetList,
     createdAt: Date.now(),
@@ -304,7 +252,7 @@ export async function createRoomInteractive(
 
   console.log(
     pc.green(
-      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${room.groupJidRowIds.length} groups! (List: ${resolveListFilePath(targetList)})\n`,
+      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${selectedGroupJidStrings.length} groups! (List: ${resolveListFilePath(targetList)})\n`,
     ),
   );
   return room;
@@ -335,26 +283,34 @@ export async function addGroupsToRoomInteractive(
   } else {
     roomId = await select<string>({
       message: "Select room to add groups to:",
-      choices: rooms.map((r) => ({
-        name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
-        value: r.id,
-      })),
+      choices: rooms.map((r) => {
+        const ids = r.groupIds ?? r.groupJidRowIds ?? [];
+        return {
+          name: `${r.id} ${pc.dim(`(${ids.length} groups)`)}`,
+          value: r.id,
+        };
+      }),
     });
   }
 
   const room = getRoomById(roomId);
   if (!room) return;
 
-  const otherRoomJids = new Set(
-    rooms
-      .filter((r) => r.id.toLowerCase() !== room.id.toLowerCase())
-      .flatMap((r) => r.groupJidRowIds),
-  );
-  const existingJids = new Set(room.groupJidRowIds);
+  const resolved = resolveRoomGroups(room, groups);
 
-  // Groups already in this room or in any other room are filtered out
+  const otherRoomsResolved = rooms
+    .filter((r) => r.id.toLowerCase() !== room.id.toLowerCase())
+    .map((r) => resolveRoomGroups(r, groups));
+
+  const otherRoomJidStrings = new Set(
+    otherRoomsResolved.flatMap((res) => res.activeJidStrings),
+  );
+  const existingJidStrings = new Set(resolved.activeJidStrings);
+
   const availableGroups = groups.filter(
-    (g) => !existingJids.has(g.jidRowId) && !otherRoomJids.has(g.jidRowId),
+    (g) =>
+      !existingJidStrings.has(g.jidString) &&
+      !otherRoomJidStrings.has(g.jidString),
   );
 
   if (availableGroups.length === 0) {
@@ -366,27 +322,29 @@ export async function addGroupsToRoomInteractive(
     return;
   }
 
-  const selectedJids = await searchCheckbox({
+  const selectedGroupJidStrings = await searchCheckbox<string>({
     message: `Select groups to add to room '${room.id}' (Type to filter, Space to check, Enter to submit):`,
     pageSize: 16,
     required: true,
     choices: availableGroups.map((g) => ({
       name: formatGroupLabel(g),
-      value: g.jidRowId,
+      value: g.jidString,
       category: g.communityName ?? "Standalone Groups",
     })),
   });
 
-  if (selectedJids.length === 0) {
+  if (selectedGroupJidStrings.length === 0) {
     console.log(pc.yellow("\nNo groups were selected.\n"));
     return;
   }
 
   const selectedGroupObjects = groups.filter((g) =>
-    selectedJids.includes(g.jidRowId),
+    selectedGroupJidStrings.includes(g.jidString),
   );
 
-  room.groupJidRowIds = [...room.groupJidRowIds, ...selectedJids];
+  const currentIds = room.groupIds ?? room.groupJidRowIds ?? [];
+  room.groupIds = [...currentIds, ...selectedGroupJidStrings];
+  room.groupJidRowIds = room.groupIds;
   room.groupNames = [
     ...(room.groupNames ?? []),
     ...selectedGroupObjects.map((g) => g.subject),
@@ -396,7 +354,7 @@ export async function addGroupsToRoomInteractive(
 
   console.log(
     pc.green(
-      `\n✅ Added ${selectedJids.length} group(s) to room '${room.id}' (${room.groupJidRowIds.length} total groups now).\n`,
+      `\n✅ Added ${selectedGroupJidStrings.length} group(s) to room '${room.id}' (${room.groupIds.length} total groups now).\n`,
     ),
   );
 }
@@ -426,75 +384,73 @@ export async function removeGroupsFromRoomInteractive(
   } else {
     roomId = await select<string>({
       message: "Select room to remove groups from:",
-      choices: rooms.map((r) => ({
-        name: `${r.id} ${pc.dim(`(${r.groupJidRowIds.length} groups)`)}`,
-        value: r.id,
-      })),
+      choices: rooms.map((r) => {
+        const ids = r.groupIds ?? r.groupJidRowIds ?? [];
+        return {
+          name: `${r.id} ${pc.dim(`(${ids.length} groups)`)}`,
+          value: r.id,
+        };
+      }),
     });
   }
 
   const room = getRoomById(roomId);
   if (!room) return;
 
-  if (room.groupJidRowIds.length === 0) {
+  const resolved = resolveRoomGroups(room, groups);
+
+  if (resolved.resolvedItems.length === 0) {
     console.log(pc.yellow(`\nRoom '${room.id}' has no groups to remove.\n`));
     return;
   }
 
-  const groupMap = new Map(groups.map((g) => [g.jidRowId, g]));
-
-  const choices = room.groupJidRowIds.map((jid, idx) => {
-    const g = groupMap.get(jid);
-    const originalName =
-      room.groupNames && room.groupNames[idx]
-        ? room.groupNames[idx]
-        : `JID ${jid}`;
-
-    if (g) {
+  const choices = resolved.resolvedItems.map((item) => {
+    if (!item.isMissing) {
       return {
-        name: formatGroupLabel(g),
-        value: jid,
-        category: g.communityName ?? "Standalone Groups",
+        name: formatGroupLabel(item),
+        value: item.id,
+        category: item.communityName ?? "Standalone Groups",
       };
     }
     return {
-      name: `${pc.red("[⚠️ MISSING / EXITED]")} ${pc.strikethrough(pc.dim(originalName))} ${pc.dim(`(JID: ${jid})`)}`,
-      value: jid,
+      name: `${pc.red("[⚠️ MISSING / EXITED]")} ${pc.strikethrough(pc.dim(item.subject))} ${pc.dim(`(ID: ${item.id})`)}`,
+      value: item.id,
       category: "Missing / Exited Groups",
     };
   });
 
-  const selectedJidsToRemove = await searchCheckbox({
+  const selectedIdsToRemove = await searchCheckbox<string | number>({
     message: `Select groups to remove from room '${room.id}' (Type to filter, Space to check, Enter to submit):`,
     pageSize: 16,
     required: true,
     choices,
   });
 
-  if (selectedJidsToRemove.length === 0) {
+  if (selectedIdsToRemove.length === 0) {
     console.log(pc.yellow("\nNo groups were selected for removal.\n"));
     return;
   }
 
-  const removeSet = new Set(selectedJidsToRemove);
-  const remainingJids: number[] = [];
+  const removeSet = new Set(selectedIdsToRemove);
+  const remainingIds: (string | number)[] = [];
   const remainingNames: string[] = [];
 
-  room.groupJidRowIds.forEach((jid, idx) => {
-    if (!removeSet.has(jid)) {
-      remainingJids.push(jid);
-      remainingNames.push(room.groupNames?.[idx] ?? `JID ${jid}`);
+  resolved.resolvedItems.forEach((item) => {
+    if (!removeSet.has(item.id)) {
+      remainingIds.push(item.id);
+      remainingNames.push(item.subject);
     }
   });
 
-  room.groupJidRowIds = remainingJids;
+  room.groupIds = remainingIds;
+  room.groupJidRowIds = remainingIds;
   room.groupNames = remainingNames;
 
   saveRoom(room);
 
   console.log(
     pc.green(
-      `\n✅ Removed ${selectedJidsToRemove.length} group(s) from room '${room.id}' (${room.groupJidRowIds.length} groups remaining).\n`,
+      `\n✅ Removed ${selectedIdsToRemove.length} group(s) from room '${room.id}' (${room.groupIds.length} groups remaining).\n`,
     ),
   );
 }
