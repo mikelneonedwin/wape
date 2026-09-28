@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { normalizeNigerianPhoneNumber } from "./phone";
 import {
   getAllKnownLists,
+  getNotedComparison,
   getRoomById,
   resolveListFilePath,
 } from "./wape-store";
@@ -90,6 +91,29 @@ export function getCommonContacts(filePaths: string[]): string[] {
   }
 
   return Array.from(common).sort();
+}
+
+export interface ComparisonDiff {
+  currentCommon: string[];
+  newContacts: string[];
+  hasPreviousRecord: boolean;
+  previousCount: number;
+}
+
+export function getComparisonDiff(
+  filePaths: string[],
+  canonicalTargets?: string[],
+): ComparisonDiff {
+  const currentCommon = getCommonContacts(filePaths);
+  const noted = getNotedComparison(canonicalTargets ?? filePaths);
+  const newContacts = currentCommon.filter((c) => !noted.contacts.has(c));
+
+  return {
+    currentCommon,
+    newContacts,
+    hasPreviousRecord: noted.exists,
+    previousCount: noted.contacts.size,
+  };
 }
 
 export interface InventoryStats {

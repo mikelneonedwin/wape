@@ -165,12 +165,17 @@ wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
 
 Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more lists simultaneously.
 
+`wape compare` maintains an order-independent record in `~/.wape/comparisons.json`. When comparing lists, any newly discovered common contacts are highlighted with a `[NEW]` badge until you consciously note the results into the record.
+
 ```bash
 # Compare global main.txt and lock.txt (default if no targets provided)
 wape compare
 
 # Compare two or more specific lists or rooms
 wape compare <target1> <target2> [target3...]
+
+# Compare and immediately note results as the new record
+wape compare <target1> <target2> --note
 ```
 
 ---

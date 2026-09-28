@@ -10,12 +10,19 @@ import {
 } from "../src/services/phone";
 import {
   getCommonContacts,
+  getComparisonDiff,
   getInventoryStats,
   mergeContactsIntoFile,
   readContactsFromFile,
   writeContactsToFile,
 } from "../src/services/file-manager";
 import { isSqliteDatabase } from "../src/services/decryptor";
+import {
+  getCanonicalComparisonKey,
+  getComparisonsFile,
+  getNotedComparison,
+  saveNotedComparison,
+} from "../src/services/wape-store";
 import { unlinkSync, existsSync, writeFileSync } from "node:fs";
 
 describe("Nigerian Phone Parser & Formatter", () => {
@@ -130,6 +137,105 @@ describe("File Manager Contact Operations", () => {
 
     unlinkSync(dummySqlite);
     unlinkSync(dummyOther);
+  });
+
+  it("handles order-independent comparison recording and detects new contacts", () => {
+    const list1 = "test_compare_1.txt";
+    const list2 = "test_compare_2.txt";
+    const comparisonsFile = getComparisonsFile();
+
+    const cleanupCompare = () => {
+      if (existsSync(list1)) unlinkSync(list1);
+      if (existsSync(list2)) unlinkSync(list2);
+      if (existsSync(comparisonsFile)) unlinkSync(comparisonsFile);
+    };
+
+    cleanupCompare();
+
+    // Initial state: 2 common contacts
+    writeContactsToFile(
+      list1,
+      new Set(["+2348011111111", "+2348022222222", "+2348033333333"]),
+    );
+    writeContactsToFile(
+      list2,
+      new Set(["+2348022222222", "+2348033333333", "+2348044444444"]),
+    );
+
+    // Canonical key is order-agnostic
+    expect(getCanonicalComparisonKey([list1, list2])).toBe(
+      getCanonicalComparisonKey([list2, list1]),
+    );
+
+    // Initial diff before recording (all common contacts are new on first run)
+    const diffInitial = getComparisonDiff([list1, list2]);
+    expect(diffInitial.hasPreviousRecord).toBe(false);
+    expect(diffInitial.currentCommon).toEqual([
+      "+2348022222222",
+      "+2348033333333",
+    ]);
+    expect(diffInitial.newContacts).toEqual([
+      "+2348022222222",
+      "+2348033333333",
+    ]);
+
+    // Consciously note the 2 contacts
+    saveNotedComparison([list1, list2], diffInitial.currentCommon);
+
+    // Check retrieving in reverse order
+    const notedReverse = getNotedComparison([list2, list1]);
+    expect(notedReverse.exists).toBe(true);
+    expect(notedReverse.contacts.size).toBe(2);
+
+    // Add 2 new common contacts to both lists
+    writeContactsToFile(
+      list1,
+      new Set([
+        "+2348011111111",
+        "+2348022222222",
+        "+2348033333333",
+        "+2348055555555",
+        "+2348066666666",
+      ]),
+    );
+    writeContactsToFile(
+      list2,
+      new Set([
+        "+2348022222222",
+        "+2348033333333",
+        "+2348044444444",
+        "+2348055555555",
+        "+2348066666666",
+      ]),
+    );
+
+    // Comparison in reverse order detects exactly the 2 new contacts without saving yet
+    const diffUpdated = getComparisonDiff([list2, list1]);
+    expect(diffUpdated.hasPreviousRecord).toBe(true);
+    expect(diffUpdated.previousCount).toBe(2);
+    expect(diffUpdated.currentCommon.length).toBe(4);
+    expect(diffUpdated.newContacts).toEqual([
+      "+2348055555555",
+      "+2348066666666",
+    ]);
+
+    // Subsequent call without saving still flags them as new
+    const diffStillNew = getComparisonDiff([list1, list2]);
+    expect(diffStillNew.newContacts).toEqual([
+      "+2348055555555",
+      "+2348066666666",
+    ]);
+
+    // Consciously note the 4 contacts
+    saveNotedComparison([list1, list2], diffStillNew.currentCommon);
+
+    // Next comparison now shows 0 new contacts
+    const diffAfterNote = getComparisonDiff([list1, list2]);
+    expect(diffAfterNote.hasPreviousRecord).toBe(true);
+    expect(diffAfterNote.previousCount).toBe(4);
+    expect(diffAfterNote.newContacts).toEqual([]);
+
+    cleanupCompare();
   });
 });
 

@@ -15,6 +15,7 @@ import {
 } from "../services/extractor";
 import {
   getCommonContacts,
+  getComparisonDiff,
   getGlobalInventory,
   getInventoryStats,
   mergeContactsIntoFile,
@@ -47,6 +48,7 @@ import {
   resolveListFilePath,
   saveAppConfig,
   saveLinks,
+  saveNotedComparison,
   type Room,
 } from "../services/wape-store";
 
@@ -993,35 +995,80 @@ roomCmd
     }
   });
 
-function executeCompare(
+async function executeCompare(
   targets: { label: string; filePath: string }[],
   title = "Common Contacts Intersection Analysis",
+  options?: { note?: boolean; save?: boolean },
 ) {
-  const commonContacts = getCommonContacts(targets.map((t) => t.filePath));
+  const filePaths = targets.map((t) => t.filePath);
+  const diff = getComparisonDiff(filePaths);
+  const newSet = new Set(diff.newContacts);
 
   console.log(pc.cyan(`\n🔍 ${title}`));
   targets.forEach((t, idx) => {
     console.log(pc.dim(`Target ${idx + 1}: ${t.label}`));
   });
+
+  const newBadgeSummary =
+    diff.newContacts.length > 0
+      ? pc.green(` (${diff.newContacts.length.toLocaleString()} new)`)
+      : "";
+
   console.log(
     pc.bold(
       pc.yellow(
-        `\nFound ${commonContacts.length.toLocaleString()} common contact(s) across all targets:\n`,
+        `\nFound ${diff.currentCommon.length.toLocaleString()} common contact(s) across all targets${newBadgeSummary}:\n`,
       ),
     ),
   );
 
-  for (const contact of commonContacts) {
-    console.log(formatPhoneNumber(contact));
+  for (const contact of diff.currentCommon) {
+    const isNew = newSet.has(contact);
+    const badge = isNew ? `  ${pc.bold(pc.green("[NEW]"))}` : "";
+    console.log(`${formatPhoneNumber(contact)}${badge}`);
   }
 
-  console.log(
-    pc.bold(
-      pc.green(
-        `\nTotal Common Contacts: ${commonContacts.length.toLocaleString()}\n`,
-      ),
-    ),
-  );
+  const totalSummary =
+    diff.newContacts.length > 0
+      ? `Total Common Contacts: ${diff.currentCommon.length.toLocaleString()} (+${diff.newContacts.length.toLocaleString()} new)`
+      : `Total Common Contacts: ${diff.currentCommon.length.toLocaleString()}`;
+
+  console.log(pc.bold(pc.green(`\n${totalSummary}\n`)));
+
+  const shouldNoteExplicitly = options?.note;
+
+  if (shouldNoteExplicitly) {
+    saveNotedComparison(filePaths, diff.currentCommon);
+    console.log(
+      pc.green("✅ Comparison results consciously noted into record.\n"),
+    );
+    return;
+  }
+
+  if (process.stdout.isTTY) {
+    const answer = await input({
+      message:
+        "Consciously note these results as the comparison record? (yes/no):",
+      validate: (val) => {
+        const v = val.trim().toLowerCase();
+        if (v === "yes" || v === "y" || v === "no" || v === "n") return true;
+        return "Please enter 'yes' (or 'y') or 'no' (or 'n').";
+      },
+    });
+
+    if (["yes", "y"].includes(answer.trim().toLowerCase())) {
+      saveNotedComparison(filePaths, diff.currentCommon);
+      console.log(
+        pc.green("\n✅ Comparison results consciously noted into record.\n"),
+      );
+    } else {
+      console.log(
+        pc.dim(
+          "\nResults not noted into record. (Use -n/--note or enter 'yes' when ready to record)\n",
+        ),
+      );
+    }
+  }
 }
 
 roomCmd
@@ -1029,7 +1076,11 @@ roomCmd
   .description(
     "Find and list common contacts across rooms in XXXX XXX XXXX format",
   )
-  .action((roomIds?: string[]) => {
+  .option(
+    "-n, --note",
+    "Consciously note and save current comparison results into record",
+  )
+  .action(async (roomIds?: string[], opts?: { note?: boolean }) => {
     try {
       const allRooms = getRooms();
       let targetRooms: Room[] = [];
@@ -1072,9 +1123,10 @@ roomCmd
         };
       });
 
-      executeCompare(
+      await executeCompare(
         resolvedTargets,
         "Rooms Common Contacts Intersection Analysis",
+        opts,
       );
     } catch (error) {
       console.error(
@@ -1099,7 +1151,11 @@ program
   .description(
     "Find and list common contacts across multiple lists or rooms in XXXX XXX XXXX format",
   )
-  .action((targets?: string[]) => {
+  .option(
+    "-n, --note",
+    "Consciously note and save current comparison results into record",
+  )
+  .action(async (targets?: string[], opts?: { note?: boolean }) => {
     try {
       let resolvedTargets: { label: string; filePath: string }[] = [];
 
@@ -1119,7 +1175,11 @@ program
         resolvedTargets = targets.map((t) => resolveTargetToList(t));
       }
 
-      executeCompare(resolvedTargets, "Common Contacts Intersection Analysis");
+      await executeCompare(
+        resolvedTargets,
+        "Common Contacts Intersection Analysis",
+        opts,
+      );
     } catch (error) {
       console.error(
         pc.red(

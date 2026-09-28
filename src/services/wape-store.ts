@@ -386,3 +386,61 @@ export function saveLinks(newLinks: string[]): {
     totalCount: sortedList.length,
   };
 }
+
+/**
+ * Comparisons record file (~/.wape/comparisons.json)
+ */
+export function getComparisonsFile(): string {
+  return join(getWapeDir(), "comparisons.json");
+}
+
+export function getCanonicalComparisonKey(targets: string[]): string {
+  const canonicalPaths = targets
+    .map((t) => resolveListFilePath(t).toLowerCase())
+    .sort();
+  return canonicalPaths.join(":::");
+}
+
+export function getNotedComparison(targets: string[]): {
+  exists: boolean;
+  contacts: Set<string>;
+} {
+  const file = getComparisonsFile();
+  if (!existsSync(file)) {
+    return { exists: false, contacts: new Set<string>() };
+  }
+  try {
+    const raw = readFileSync(file, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, string[]>;
+    const key = getCanonicalComparisonKey(targets);
+    if (
+      Object.prototype.hasOwnProperty.call(parsed, key) &&
+      Array.isArray(parsed[key])
+    ) {
+      return { exists: true, contacts: new Set<string>(parsed[key]) };
+    }
+    return { exists: false, contacts: new Set<string>() };
+  } catch {
+    return { exists: false, contacts: new Set<string>() };
+  }
+}
+
+export function saveNotedComparison(
+  targets: string[],
+  contacts: Set<string> | string[],
+): void {
+  const file = getComparisonsFile();
+  let data: Record<string, string[]> = {};
+  if (existsSync(file)) {
+    try {
+      const raw = readFileSync(file, "utf-8");
+      data = JSON.parse(raw) as Record<string, string[]>;
+    } catch {
+      data = {};
+    }
+  }
+  const key = getCanonicalComparisonKey(targets);
+  const sorted = Array.from(contacts).sort();
+  data[key] = sorted;
+  writeFileSync(file, JSON.stringify(data, null, 2), "utf-8");
+}
