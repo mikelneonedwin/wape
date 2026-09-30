@@ -48,7 +48,7 @@ wape config set --key <your-64-char-hex-key>
 
 ### 5. Backup Auto-Discovery
 
-`wape` automatically detects backup databases matching `msgstore*.db*.crypt*` across `~/Downloads`, `~`, and `~/.wape`. If multiple backups are present, `wape` prompts you to choose which one to use.
+`wape` automatically detects backup databases matching `msgstore*.db*.crypt*` across `~/Downloads`, `~`, and `~/.wape`. When multiple backup files exist, `wape` automatically selects the newest one based on the date it landed on the drive.
 
 To bypass auto-discovery and set an explicit path:
 
@@ -165,7 +165,7 @@ wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
 
 Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more lists simultaneously.
 
-`wape compare` maintains an order-independent record in `~/.wape/comparisons.json`. When comparing lists, any newly discovered common contacts are highlighted with a `[NEW]` badge until you consciously note the results into the record.
+`wape compare` automatically maintains an order-independent record in `~/.wape/comparisons.json`. Any newly discovered common contacts are highlighted with a `[NEW]` badge, automatically copied to your clipboard (each item on its own new line with the `[NEW]` tag), and recorded so they are no longer marked as new on subsequent comparisons.
 
 ```bash
 # Compare global main.txt and lock.txt (default if no targets provided)
@@ -173,9 +173,6 @@ wape compare
 
 # Compare two or more specific lists or rooms
 wape compare <target1> <target2> [target3...]
-
-# Compare and immediately note results as the new record
-wape compare <target1> <target2> --note
 ```
 
 ---
@@ -244,7 +241,7 @@ wape lists
 
 ### 10. WhatsApp Group Links Extractor (`wape links`)
 
-Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, presents new links in an alphabetical checklist to pick, records the chosen links into `links.json`, and prints them one per line to the terminal.
+Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, presents new links in an alphabetical checklist to pick, records the chosen links into `links.json`, copies them automatically to your clipboard (strictly one link per new line), and prints them one per line to the terminal.
 
 ```bash
 wape links

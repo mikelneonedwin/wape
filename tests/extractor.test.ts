@@ -16,14 +16,19 @@ import {
   readContactsFromFile,
   writeContactsToFile,
 } from "../src/services/file-manager";
-import { isSqliteDatabase } from "../src/services/decryptor";
+import {
+  isSqliteDatabase,
+  discoverMsgstoreBackups,
+} from "../src/services/decryptor";
+import { copyToClipboard } from "../src/services/clipboard";
 import {
   getCanonicalComparisonKey,
   getComparisonsFile,
   getNotedComparison,
+  getWapeDir,
   saveNotedComparison,
 } from "../src/services/wape-store";
-import { unlinkSync, existsSync, writeFileSync } from "node:fs";
+import { unlinkSync, existsSync, writeFileSync, utimesSync } from "node:fs";
 
 describe("Nigerian Phone Parser & Formatter", () => {
   it("normalizes international +234 numbers", () => {
@@ -657,5 +662,40 @@ describe("Group and Community Extractor", () => {
     expect(persisted?.groupIds?.[0]).toBe("120363011111111111@g.us");
     expect(persisted?.groupIds?.[1]).toBe("120363022222222222@g.us");
     expect(persisted?.groupIds?.[2]).toBe(888);
+  });
+
+  it("discovers backups and sorts them by date landed on drive (newest first)", () => {
+    const wapeDir = getWapeDir();
+
+    const olderFile = join(wapeDir, "msgstore-2023-01-01.1.db.crypt14");
+    const newerFile = join(wapeDir, "msgstore-2023-06-01.1.db.crypt14");
+
+    writeFileSync(olderFile, "fake backup 1");
+    // sleep tiny bit or touch mtime
+    const now = Date.now();
+    const olderTime = new Date(now - 100000);
+    const newerTime = new Date(now);
+
+    utimesSync(olderFile, olderTime, olderTime);
+
+    writeFileSync(newerFile, "fake backup 2");
+    utimesSync(newerFile, newerTime, newerTime);
+
+    const discovered = discoverMsgstoreBackups();
+    expect(discovered.length).toBeGreaterThanOrEqual(2);
+    const olderIdx = discovered.indexOf(olderFile);
+    const newerIdx = discovered.indexOf(newerFile);
+
+    expect(newerIdx).toBeLessThan(olderIdx);
+
+    unlinkSync(olderFile);
+    unlinkSync(newerFile);
+  });
+
+  it("handles copyToClipboard without throwing error in any environment", async () => {
+    const res = await copyToClipboard(
+      "0801 234 5678  [NEW]\n0802 345 6789  [NEW]",
+    );
+    expect(typeof res).toBe("boolean");
   });
 });

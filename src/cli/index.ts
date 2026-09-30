@@ -6,6 +6,7 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { getDatabase } from "../db";
 import { ensureDecryptedDatabase } from "../services/decryptor";
+import { copyToClipboard } from "../services/clipboard";
 import {
   extractNigerianNumbersFromGroups,
   extractWhatsAppGroupLinks,
@@ -103,25 +104,24 @@ async function executeGroupExport(
     return;
   }
 
-  // Confirmation view
-  console.log(pc.cyan("\n" + "=".repeat(68)));
-  console.log(
-    pc.bold(
-      pc.cyan(
-        `📋 SELECTED GROUPS FOR EXPORT (${targetGroupJids.length} total):`,
-      ),
-    ),
-  );
-  console.log("=".repeat(68));
-  selectedGroupLabels.forEach((label, idx) => {
-    console.log(
-      `  ${pc.bold((idx + 1).toString().padStart(2, " "))}. ${label}`,
-    );
-  });
-  console.log("=".repeat(68) + "\n");
-
-  // Only ask for yes/no confirmation on ad-hoc group selections, skip for room scans
+  // Confirmation view - only show for ad-hoc group selections, skip for room scans to keep output concise
   if (!options?.roomContext) {
+    console.log(pc.cyan("\n" + "=".repeat(68)));
+    console.log(
+      pc.bold(
+        pc.cyan(
+          `📋 SELECTED GROUPS FOR EXPORT (${targetGroupJids.length} total):`,
+        ),
+      ),
+    );
+    console.log("=".repeat(68));
+    selectedGroupLabels.forEach((label, idx) => {
+      console.log(
+        `  ${pc.bold((idx + 1).toString().padStart(2, " "))}. ${label}`,
+      );
+    });
+    console.log("=".repeat(68) + "\n");
+
     const proceedAnswer = await input({
       message: `Proceed with extracting Nigerian contacts from these ${pc.bold(targetGroupJids.length)} group(s)? (yes/no):`,
       validate: (val) => {
@@ -239,22 +239,16 @@ async function scanSingleRoom(
     .filter((i) => i.isMissing)
     .map((i) => i.subject);
 
+  const missingBadge =
+    missingNames.length > 0
+      ? ` • ${pc.yellow(`${missingNames.length} missing/exited skipped`)}`
+      : "";
+
   console.log(
     pc.cyan(
-      `\n🏠 Scanning Room '${pc.bold(room.id)}' (${activeJids.length} active groups)...`,
+      `\n🏠 Scanning Room '${pc.bold(room.id)}' (${activeJids.length} active groups${missingBadge})...`,
     ),
   );
-
-  if (missingNames.length > 0) {
-    console.log(
-      pc.yellow(
-        `⚠️ Note: ${missingNames.length} group(s) in room '${room.id}' are missing/exited and will be skipped:`,
-      ),
-    );
-    missingNames.forEach((name) =>
-      console.log(`   ${pc.red("•")} ${pc.strikethrough(pc.dim(name))}`),
-    );
-  }
 
   if (activeJids.length === 0) {
     console.log(pc.yellow(`No active groups to scan in room '${room.id}'.\n`));
@@ -589,8 +583,19 @@ oneoffCmd
 
       saveLinks(selectedLinks);
 
+      const clipboardText = selectedLinks.join("\n");
+      const copied = await copyToClipboard(clipboardText);
+
       for (const link of selectedLinks) {
         console.log(link);
+      }
+
+      if (copied) {
+        console.log(
+          pc.dim(
+            `\n📋 Copied ${selectedLinks.length.toLocaleString()} link(s) to clipboard.\n`,
+          ),
+        );
       }
     } catch (error) {
       console.error(
@@ -998,7 +1003,6 @@ roomCmd
 async function executeCompare(
   targets: { label: string; filePath: string }[],
   title = "Common Contacts Intersection Analysis",
-  options?: { note?: boolean; save?: boolean },
 ) {
   const filePaths = targets.map((t) => t.filePath);
   const diff = getComparisonDiff(filePaths);
@@ -1035,40 +1039,23 @@ async function executeCompare(
 
   console.log(pc.bold(pc.green(`\n${totalSummary}\n`)));
 
-  const shouldNoteExplicitly = options?.note;
-
-  if (shouldNoteExplicitly) {
-    saveNotedComparison(filePaths, diff.currentCommon);
-    console.log(
-      pc.green("✅ Comparison results consciously noted into record.\n"),
-    );
-    return;
-  }
-
-  if (process.stdout.isTTY) {
-    const answer = await input({
-      message:
-        "Consciously note these results as the comparison record? (yes/no):",
-      validate: (val) => {
-        const v = val.trim().toLowerCase();
-        if (v === "yes" || v === "y" || v === "no" || v === "n") return true;
-        return "Please enter 'yes' (or 'y') or 'no' (or 'n').";
-      },
-    });
-
-    if (["yes", "y"].includes(answer.trim().toLowerCase())) {
-      saveNotedComparison(filePaths, diff.currentCommon);
-      console.log(
-        pc.green("\n✅ Comparison results consciously noted into record.\n"),
-      );
-    } else {
+  // Automatically copy new contacts with [NEW] tag to clipboard, each on its own line
+  if (diff.newContacts.length > 0) {
+    const clipboardText = diff.newContacts
+      .map((contact) => `${formatPhoneNumber(contact)}  [NEW]`)
+      .join("\n");
+    const copied = await copyToClipboard(clipboardText);
+    if (copied) {
       console.log(
         pc.dim(
-          "\nResults not noted into record. (Use -n/--note or enter 'yes' when ready to record)\n",
+          `📋 Copied ${diff.newContacts.length.toLocaleString()} new contact(s) with [NEW] tag to clipboard.\n`,
         ),
       );
     }
   }
+
+  // Automatically record / update the comparison record for future runs
+  saveNotedComparison(filePaths, diff.currentCommon);
 }
 
 roomCmd
@@ -1076,11 +1063,7 @@ roomCmd
   .description(
     "Find and list common contacts across rooms in XXXX XXX XXXX format",
   )
-  .option(
-    "-n, --note",
-    "Consciously note and save current comparison results into record",
-  )
-  .action(async (roomIds?: string[], opts?: { note?: boolean }) => {
+  .action(async (roomIds?: string[]) => {
     try {
       const allRooms = getRooms();
       let targetRooms: Room[] = [];
@@ -1126,7 +1109,6 @@ roomCmd
       await executeCompare(
         resolvedTargets,
         "Rooms Common Contacts Intersection Analysis",
-        opts,
       );
     } catch (error) {
       console.error(
@@ -1151,11 +1133,7 @@ program
   .description(
     "Find and list common contacts across multiple lists or rooms in XXXX XXX XXXX format",
   )
-  .option(
-    "-n, --note",
-    "Consciously note and save current comparison results into record",
-  )
-  .action(async (targets?: string[], opts?: { note?: boolean }) => {
+  .action(async (targets?: string[]) => {
     try {
       let resolvedTargets: { label: string; filePath: string }[] = [];
 
@@ -1178,7 +1156,6 @@ program
       await executeCompare(
         resolvedTargets,
         "Common Contacts Intersection Analysis",
-        opts,
       );
     } catch (error) {
       console.error(
@@ -1533,9 +1510,20 @@ program
 
       saveLinks(selectedLinks);
 
+      const clipboardText = selectedLinks.join("\n");
+      const copied = await copyToClipboard(clipboardText);
+
       // Print picked links strictly one per line to terminal
       for (const link of selectedLinks) {
         console.log(link);
+      }
+
+      if (copied) {
+        console.log(
+          pc.dim(
+            `\n📋 Copied ${selectedLinks.length.toLocaleString()} link(s) to clipboard.\n`,
+          ),
+        );
       }
     } catch (error) {
       console.error(

@@ -354,9 +354,15 @@ export async function addGroupsToRoomInteractive(
 
   console.log(
     pc.green(
-      `\n✅ Added ${selectedGroupJidStrings.length} group(s) to room '${room.id}' (${room.groupIds.length} total groups now).\n`,
+      `\n✅ Added ${selectedGroupJidStrings.length} group(s) to room '${pc.bold(room.id)}' (${room.groupIds.length} total groups now):`,
     ),
   );
+  selectedGroupObjects.forEach((g, idx) => {
+    console.log(
+      `  ${pc.bold((idx + 1).toString().padStart(2, " "))}. ${formatGroupLabel(g)}`,
+    );
+  });
+  console.log("");
 }
 
 export async function removeGroupsFromRoomInteractive(

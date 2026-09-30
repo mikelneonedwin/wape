@@ -1,4 +1,4 @@
-import { input, select } from "@inquirer/prompts";
+import { input } from "@inquirer/prompts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -10,7 +10,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import pc from "picocolors";
 import {
   getAppConfig,
@@ -35,15 +35,16 @@ export function isSqliteDatabase(filePath: string): boolean {
 }
 
 /**
- * Scans directories (Downloads, user home, ~/.wape or WAPE_HOME) for rogue WhatsApp mgstore backup files matching:
+ * Scans directories (Downloads, user home, ~/.wape or WAPE_HOME) for WhatsApp msgstore backup files matching:
  * "mgstore" -> optional content -> "db" -> optional content -> "crypt" -> optional content (case-insensitive).
  * Also accepts "msgstore" variation.
+ * Returns paths sorted with the newest file (by date landed on drive) first.
  */
 export function discoverMsgstoreBackups(): string[] {
   const candidateDirs = [join(homedir(), "Downloads"), homedir(), getWapeDir()];
 
   const pattern = /m[sg]?gstore.*db.*crypt.*/i;
-  const discoveredMap = new Map<string, string>();
+  const discoveredMap = new Map<string, { path: string; timestamp: number }>();
 
   for (const dir of candidateDirs) {
     if (!existsSync(dir)) continue;
@@ -60,7 +61,12 @@ export function discoverMsgstoreBackups(): string[] {
               stats.size > 0 &&
               !discoveredMap.has(fullPath)
             ) {
-              discoveredMap.set(fullPath, fullPath);
+              // Get timestamp when file landed on drive (birthtimeMs / mtimeMs / ctimeMs)
+              const timestamp =
+                stats.birthtimeMs && stats.birthtimeMs > 0
+                  ? stats.birthtimeMs
+                  : Math.max(stats.mtimeMs || 0, stats.ctimeMs || 0);
+              discoveredMap.set(fullPath, { path: fullPath, timestamp });
             }
           } catch (_err) {
             // Ignore unreadable candidate file
@@ -72,7 +78,12 @@ export function discoverMsgstoreBackups(): string[] {
     }
   }
 
-  return Array.from(discoveredMap.values());
+  // Sort descending by timestamp: newest date landed on drive first
+  const sorted = Array.from(discoveredMap.values()).sort(
+    (a, b) => b.timestamp - a.timestamp,
+  );
+
+  return sorted.map((item) => item.path);
 }
 
 /**
@@ -84,7 +95,7 @@ export function discoverMsgstoreBackup(): string | null {
 }
 
 /**
- * Resolves the backup path and decryption key from options, WAPE_BACKUP / WAPE_KEY env vars, config.json, or auto-discovery with interactive selection.
+ * Resolves the backup path and decryption key from options, WAPE_BACKUP / WAPE_KEY env vars, config.json, or auto-discovery (auto-picking newest).
  */
 export async function resolveBackupCredentials(options?: {
   backupPath?: string;
@@ -99,7 +110,7 @@ export async function resolveBackupCredentials(options?: {
   if (!backupPath || !existsSync(backupPath)) {
     const discoveredList = discoverMsgstoreBackups();
 
-    if (discoveredList.length === 1) {
+    if (discoveredList.length === 1 && discoveredList[0]) {
       const discovered = discoveredList[0];
       console.log(
         pc.cyan(
@@ -107,26 +118,22 @@ export async function resolveBackupCredentials(options?: {
         ),
       );
       backupPath = discovered;
-    } else if (discoveredList.length > 1) {
+    } else if (discoveredList.length > 1 && discoveredList[0]) {
+      const newest = discoveredList[0];
+      const stats = statSync(newest);
+      const sizeMb = (stats.size / (1024 * 1024)).toFixed(1);
+      const fileDate = new Date(
+        stats.birthtimeMs && stats.birthtimeMs > 0
+          ? stats.birthtimeMs
+          : stats.mtimeMs,
+      ).toLocaleString();
+
       console.log(
         pc.cyan(
-          `\n🔎 Discovered ${discoveredList.length} WhatsApp backup files:\n`,
+          `🔎 Discovered ${discoveredList.length} WhatsApp backup files. Automatically selected newest (landed ${fileDate}):\n   ${pc.bold(newest)} ${pc.dim(`(${sizeMb} MB)`)}\n`,
         ),
       );
-      const picked = await select<string>({
-        message: "Select WhatsApp backup file to use:",
-        choices: discoveredList.map((path) => {
-          const stats = statSync(path);
-          const sizeMb = (stats.size / (1024 * 1024)).toFixed(1);
-          return {
-            name: `${pc.bold(basename(path))} ${pc.dim(`(${sizeMb} MB • ${path})`)}`,
-            value: path,
-          };
-        }),
-      });
-
-      backupPath = picked;
-      console.log(pc.green(`✅ Using backup file: ${pc.bold(picked)}\n`));
+      backupPath = newest;
     }
   }
 
