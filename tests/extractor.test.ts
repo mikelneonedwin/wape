@@ -14,6 +14,7 @@ import {
   getInventoryStats,
   mergeContactsIntoFile,
   readContactsFromFile,
+  unmergeContactsFromFile,
   writeContactsToFile,
 } from "../src/services/file-manager";
 import {
@@ -241,6 +242,83 @@ describe("File Manager Contact Operations", () => {
     expect(diffAfterNote.newContacts).toEqual([]);
 
     cleanupCompare();
+  });
+
+  it("parses contacts from vCard (.vcf) files including folded lines, various Nigerian number formats, and ignores invalid/non-Nigerian numbers", () => {
+    const vcfSample = `BEGIN:VCARD
+VERSION:3.0
+FN:Adeoluwa Doe
+TEL;TYPE=CELL:+234 801 234 5678
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Bisi Akindele
+item1.TEL;waid=2349012345678:0901 234 5678
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Chidi Okeke
+TEL;TYPE=HOME:803 123 4567
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Non Nigerian Contact
+TEL;TYPE=WORK:+1 (555) 123-4567
+END:VCARD
+BEGIN:VCARD
+VERSION:2.1
+N:Eze;Emeka;;;
+FN:Emeka Eze
+TEL;CELL;VOICE:07037761092
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Folded Line Contact
+NOTE:This is a long note that is folded across
+ multiple lines
+TEL:+234 805
+ 555 6666
+END:VCARD
+`;
+
+    const vcfFile = "test_contacts.vcf";
+    writeFileSync(vcfFile, vcfSample, "utf-8");
+
+    const contacts = readContactsFromFile(vcfFile);
+    expect(contacts.size).toBe(5);
+    expect(contacts.has("+2348012345678")).toBe(true);
+    expect(contacts.has("+2349012345678")).toBe(true);
+    expect(contacts.has("+2348031234567")).toBe(true);
+    expect(contacts.has("+2347037761092")).toBe(true);
+    expect(contacts.has("+2348055556666")).toBe(true);
+    // US number excluded
+    expect(contacts.has("+15551234567")).toBe(false);
+
+    // Test patching from VCF into a target text list file
+    const targetList = "test_patched_room.txt";
+    if (existsSync(targetList)) unlinkSync(targetList);
+    writeContactsToFile(targetList, new Set(["+2348012345678"]));
+
+    const mergeRes = mergeContactsIntoFile(targetList, contacts);
+    expect(mergeRes.uniqueExtractsCount).toBe(5);
+    expect(mergeRes.addedCount).toBe(4);
+    expect(mergeRes.totalCount).toBe(5);
+
+    // Test comparison between VCF and room list
+    const common = getCommonContacts([vcfFile, targetList]);
+    expect(common.length).toBe(5);
+
+    // Test unpatching contacts from VCF out of the room list
+    const unmergeRes = unmergeContactsFromFile(targetList, contacts);
+    expect(unmergeRes.uniqueExtractsCount).toBe(5);
+    expect(unmergeRes.removedCount).toBe(5);
+    expect(unmergeRes.totalCount).toBe(0);
+
+    const afterUnpatch = readContactsFromFile(targetList);
+    expect(afterUnpatch.size).toBe(0);
+
+    if (existsSync(vcfFile)) unlinkSync(vcfFile);
+    if (existsSync(targetList)) unlinkSync(targetList);
   });
 });
 

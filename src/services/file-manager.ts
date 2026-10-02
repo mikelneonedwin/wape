@@ -8,6 +8,37 @@ import {
   resolveListFilePath,
 } from "./wape-store";
 
+/**
+ * Parses vCard (.vcf) content and returns unique normalized Nigerian phone numbers.
+ */
+export function extractContactsFromVcfContent(content: string): Set<string> {
+  const contacts = new Set<string>();
+  // Unfold multi-line folded vCard fields (lines starting with space or tab)
+  const unfolded = content.replace(/\r?\n[ \t]/g, "");
+  const lines = unfolded.split(/\r?\n/);
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Match TEL or itemX.TEL lines: e.g. TEL:+234..., TEL;TYPE=CELL:080..., item1.TEL;waid=...:080...
+    if (/^(?:[a-zA-Z0-9_-]+\.)?TEL(?:;[^:]*)?:(.*)$/i.test(trimmed)) {
+      const match = trimmed.match(
+        /^(?:[a-zA-Z0-9_-]+\.)?TEL(?:;[^:]*)?:(.*)$/i,
+      );
+      const rawNumber = match?.[1]?.trim();
+      if (rawNumber) {
+        const normalized = normalizeNigerianPhoneNumber(rawNumber);
+        if (normalized) {
+          contacts.add(normalized);
+        }
+      }
+    }
+  }
+
+  return contacts;
+}
+
 export function readContactsFromFile(filePath: string): Set<string> {
   const fullPath = resolve(filePath);
   if (!existsSync(fullPath)) {
@@ -15,6 +46,11 @@ export function readContactsFromFile(filePath: string): Set<string> {
   }
 
   const content = readFileSync(fullPath, "utf-8");
+
+  if (fullPath.toLowerCase().endsWith(".vcf")) {
+    return extractContactsFromVcfContent(content);
+  }
+
   const lines = content.split(/\r?\n/);
   const contacts = new Set<string>();
 
@@ -66,6 +102,38 @@ export function mergeContactsIntoFile(
   return {
     uniqueExtractsCount: newContacts.size,
     addedCount,
+    totalCount,
+  };
+}
+
+export interface UnmergeResult {
+  uniqueExtractsCount: number;
+  removedCount: number;
+  totalCount: number;
+}
+
+export function unmergeContactsFromFile(
+  filePath: string,
+  contactsToRemove: Set<string>,
+): UnmergeResult {
+  const existingContacts = readContactsFromFile(filePath);
+  const initialSize = existingContacts.size;
+
+  const remaining = new Set<string>();
+  for (const contact of existingContacts) {
+    if (!contactsToRemove.has(contact)) {
+      remaining.add(contact);
+    }
+  }
+
+  const removedCount = initialSize - remaining.size;
+  const totalCount = remaining.size;
+
+  writeContactsToFile(filePath, remaining);
+
+  return {
+    uniqueExtractsCount: contactsToRemove.size,
+    removedCount,
     totalCount,
   };
 }

@@ -280,6 +280,12 @@ export function resolveListFilePath(listNameOrPath: string): string {
   }
 
   const cleanName = trimmed.replace(/^(\.\/|\.\\)/, "");
+  if (cleanName.toLowerCase().endsWith(".vcf")) {
+    return resolve(cleanName);
+  }
+  if (existsSync(resolve(cleanName))) {
+    return resolve(cleanName);
+  }
   const filename = cleanName.endsWith(".txt") ? cleanName : `${cleanName}.txt`;
   return join(getWapeListsDir(), filename);
 }

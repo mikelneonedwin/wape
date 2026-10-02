@@ -22,6 +22,7 @@ import {
   mergeContactsIntoFile,
   readContactsFromFile,
   resolveTargetToList,
+  unmergeContactsFromFile,
 } from "../services/file-manager";
 import { formatPhoneNumber } from "../services/phone";
 import {
@@ -524,7 +525,7 @@ oneoffCmd
 oneoffCmd
   .command("links")
   .description(
-    "Extract all WhatsApp group invite links from a one-off backup, pick links, record them, and print them",
+    `Extract all newly found WhatsApp group invite links from a one-off backup, record them to ${getSavedLinksFile()}, print, and copy them`,
   )
   .requiredOption(
     "-k, --key <key>",
@@ -547,11 +548,11 @@ oneoffCmd
       }
 
       const recordedLinks = new Set(getSavedLinks());
-      const availableLinks = allExtractedLinks.filter(
+      const newLinks = allExtractedLinks.filter(
         (link) => !recordedLinks.has(link),
       );
 
-      if (availableLinks.length === 0) {
+      if (newLinks.length === 0) {
         console.log(
           pc.green(
             `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
@@ -560,40 +561,19 @@ oneoffCmd
         return;
       }
 
-      console.log(
-        pc.cyan(
-          `\n🔗 WhatsApp Group Invite Links (${availableLinks.length} new available / ${allExtractedLinks.length} total in backup):\n`,
-        ),
-      );
+      saveLinks(newLinks);
 
-      const selectedLinks = await searchCheckbox({
-        message:
-          "Select WhatsApp group links to record & output (Space to check, Enter to submit):",
-        pageSize: 18,
-        choices: availableLinks.map((link) => ({
-          name: link,
-          value: link,
-        })),
-      });
-
-      if (selectedLinks.length === 0) {
-        console.log(pc.yellow("\nNo links were selected.\n"));
-        return;
-      }
-
-      saveLinks(selectedLinks);
-
-      const clipboardText = selectedLinks.join("\n");
+      const clipboardText = newLinks.join("\n");
       const copied = await copyToClipboard(clipboardText);
 
-      for (const link of selectedLinks) {
+      for (const link of newLinks) {
         console.log(link);
       }
 
       if (copied) {
         console.log(
           pc.dim(
-            `\n📋 Copied ${selectedLinks.length.toLocaleString()} link(s) to clipboard.\n`,
+            `\n📋 Copied ${newLinks.length.toLocaleString()} newly found link(s) to clipboard.\n`,
           ),
         );
       }
@@ -891,7 +871,7 @@ roomCmd
 roomCmd
   .command("patch <id> <files...>")
   .description(
-    "Import and merge contacts from external text file(s) into a room's list",
+    "Import and merge contacts from external text/vCard (.vcf) file(s) into a room's list",
   )
   .action((id: string, files: string[]) => {
     try {
@@ -948,6 +928,83 @@ roomCmd
       );
       console.log(
         `${pc.bold("Total Contacts in Room:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
+      );
+      console.log("=".repeat(58) + "\n");
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+roomCmd
+  .command("unpatch <id> <files...>")
+  .description(
+    "Remove contacts present in external text/vCard (.vcf) file(s) from a room's list",
+  )
+  .action((id: string, files: string[]) => {
+    try {
+      const room = getRoomById(id);
+      if (!room) {
+        console.error(
+          pc.red(
+            `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+          ),
+        );
+        process.exit(1);
+      }
+
+      const targetListPath = resolveListFilePath(
+        room.targetList ?? `${room.id}.txt`,
+      );
+      const allRemoveContacts = new Set<string>();
+
+      for (const f of files) {
+        const resolvedPath = resolve(f);
+        if (!existsSync(resolvedPath)) {
+          console.error(
+            pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
+          );
+          process.exit(1);
+        }
+        const contacts = readContactsFromFile(resolvedPath);
+        for (const c of contacts) allRemoveContacts.add(c);
+      }
+
+      if (allRemoveContacts.size === 0) {
+        console.log(
+          pc.yellow(
+            `\nNo valid Nigerian phone numbers found in the provided file(s) to unpatch.\n`,
+          ),
+        );
+        return;
+      }
+
+      const unmergeResult = unmergeContactsFromFile(
+        targetListPath,
+        allRemoveContacts,
+      );
+
+      console.log(pc.yellow("\n" + "=".repeat(58)));
+      console.log(
+        pc.bold(pc.yellow(`       UNPATCH REPORT: Room '${room.id}'`)),
+      );
+      console.log("=".repeat(58));
+      console.log(
+        `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+      );
+      console.log(`${pc.bold("Source File(s):")}          ${files.join(", ")}`);
+      console.log(
+        `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(unmergeResult.uniqueExtractsCount.toLocaleString())}`,
+      );
+      console.log(
+        `${pc.bold("Contacts Removed:")}        ${pc.red("-" + unmergeResult.removedCount.toLocaleString())}`,
+      );
+      console.log(
+        `${pc.bold("Total Contacts in Room:")}  ${pc.magenta(unmergeResult.totalCount.toLocaleString())}`,
       );
       console.log("=".repeat(58) + "\n");
     } catch (error) {
@@ -1299,7 +1356,7 @@ program
 program
   .command("patch [args...]")
   .description(
-    "Patch/import contacts from external text file(s) into global lists (--main, --lock) or a room/list target",
+    "Patch/import contacts from external text/vCard (.vcf) file(s) into global lists (--main, --lock) or a room/list target",
   )
   .option("--main", `Patch into global main list (${getMainListPath()})`)
   .option("--lock", `Patch into global lock list (${getLockListPath()})`)
@@ -1423,6 +1480,137 @@ program
   );
 
 /**
+ * Unpatch Command
+ */
+program
+  .command("unpatch [args...]")
+  .description(
+    "Unpatch/remove contacts present in external text/vCard (.vcf) file(s) from global lists (--main, --lock) or a room/list target",
+  )
+  .option("--main", `Unpatch from global main list (${getMainListPath()})`)
+  .option("--lock", `Unpatch from global lock list (${getLockListPath()})`)
+  .action(
+    (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
+      try {
+        let targetLabel = "";
+        let targetListPath = "";
+        let fileArgs: string[] = [];
+
+        if (opts.main && opts.lock) {
+          console.error(
+            pc.red(
+              "\n❌ Error: Cannot specify both --main and --lock simultaneously.\n",
+            ),
+          );
+          process.exit(1);
+        }
+
+        if (opts.main) {
+          targetLabel = "Global Main List (main.txt)";
+          targetListPath = getMainListPath();
+          fileArgs = args;
+        } else if (opts.lock) {
+          targetLabel = "Global Lock List (lock.txt)";
+          targetListPath = getLockListPath();
+          fileArgs = args;
+        } else {
+          if (args.length < 2) {
+            console.error(
+              pc.red(
+                "\n❌ Error: Please specify a target list/room and at least one source file to unpatch.\n" +
+                  "   Usage: wape unpatch --main <file1.vcf> [file2.vcf...]\n" +
+                  "          wape unpatch --lock <file1.vcf> [file2.vcf...]\n" +
+                  "          wape unpatch <target> <file1.vcf> [file2.vcf...]\n",
+              ),
+            );
+            process.exit(1);
+          }
+          const [targetArg, ...restFiles] = args;
+          if (!targetArg) {
+            console.error(
+              pc.red("\n❌ Error: Please specify a target list or room.\n"),
+            );
+            process.exit(1);
+          }
+          const resolved = resolveTargetToList(targetArg);
+          targetLabel = resolved.label;
+          targetListPath = resolved.filePath;
+          fileArgs = restFiles;
+        }
+
+        if (fileArgs.length === 0) {
+          console.error(
+            pc.red(
+              "\n❌ Error: At least one source file must be specified.\n" +
+                "   Usage: wape unpatch --main <file1.vcf> [file2.vcf...]\n" +
+                "          wape unpatch --lock <file1.vcf> [file2.vcf...]\n" +
+                "          wape unpatch <target> <file1.vcf> [file2.vcf...]\n",
+            ),
+          );
+          process.exit(1);
+        }
+
+        const allRemoveContacts = new Set<string>();
+
+        for (const f of fileArgs) {
+          const resolvedPath = resolve(f);
+          if (!existsSync(resolvedPath)) {
+            console.error(
+              pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
+            );
+            process.exit(1);
+          }
+          const contacts = readContactsFromFile(resolvedPath);
+          for (const c of contacts) allRemoveContacts.add(c);
+        }
+
+        if (allRemoveContacts.size === 0) {
+          console.log(
+            pc.yellow(
+              "\nNo valid Nigerian phone numbers found in the provided file(s) to unpatch.\n",
+            ),
+          );
+          return;
+        }
+
+        const unmergeResult = unmergeContactsFromFile(
+          targetListPath,
+          allRemoveContacts,
+        );
+
+        console.log(pc.yellow("\n" + "=".repeat(58)));
+        console.log(
+          pc.bold(pc.yellow(`       UNPATCH REPORT: ${targetLabel}`)),
+        );
+        console.log("=".repeat(58));
+        console.log(
+          `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+        );
+        console.log(
+          `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
+        );
+        console.log(
+          `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(unmergeResult.uniqueExtractsCount.toLocaleString())}`,
+        );
+        console.log(
+          `${pc.bold("Contacts Removed:")}        ${pc.red("-" + unmergeResult.removedCount.toLocaleString())}`,
+        );
+        console.log(
+          `${pc.bold("Total Contacts in List:")}  ${pc.magenta(unmergeResult.totalCount.toLocaleString())}`,
+        );
+        console.log("=".repeat(58) + "\n");
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
+/**
  * Print Command
  */
 program
@@ -1459,7 +1647,7 @@ program
 program
   .command("links")
   .description(
-    `Extract all WhatsApp group invite links from all chats, pick links, record them to ${getSavedLinksFile()}, and print them`,
+    `Extract all newly found WhatsApp group invite links from all chats, record them to ${getSavedLinksFile()}, print, and copy them`,
   )
   .action(async () => {
     try {
@@ -1474,11 +1662,11 @@ program
       }
 
       const recordedLinks = new Set(getSavedLinks());
-      const availableLinks = allExtractedLinks.filter(
+      const newLinks = allExtractedLinks.filter(
         (link) => !recordedLinks.has(link),
       );
 
-      if (availableLinks.length === 0) {
+      if (newLinks.length === 0) {
         console.log(
           pc.green(
             `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
@@ -1487,41 +1675,20 @@ program
         return;
       }
 
-      console.log(
-        pc.cyan(
-          `\n🔗 WhatsApp Group Invite Links (${availableLinks.length} new available / ${allExtractedLinks.length} total in backup):\n`,
-        ),
-      );
+      saveLinks(newLinks);
 
-      const selectedLinks = await searchCheckbox({
-        message:
-          "Select WhatsApp group links to record & output (Space to check, Enter to submit):",
-        pageSize: 18,
-        choices: availableLinks.map((link) => ({
-          name: link,
-          value: link,
-        })),
-      });
-
-      if (selectedLinks.length === 0) {
-        console.log(pc.yellow("\nNo links were selected.\n"));
-        return;
-      }
-
-      saveLinks(selectedLinks);
-
-      const clipboardText = selectedLinks.join("\n");
+      const clipboardText = newLinks.join("\n");
       const copied = await copyToClipboard(clipboardText);
 
-      // Print picked links strictly one per line to terminal
-      for (const link of selectedLinks) {
+      // Print newly found links strictly one per line to terminal
+      for (const link of newLinks) {
         console.log(link);
       }
 
       if (copied) {
         console.log(
           pc.dim(
-            `\n📋 Copied ${selectedLinks.length.toLocaleString()} link(s) to clipboard.\n`,
+            `\n📋 Copied ${newLinks.length.toLocaleString()} newly found link(s) to clipboard.\n`,
           ),
         );
       }

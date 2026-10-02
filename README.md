@@ -95,8 +95,11 @@ wape rooms groups [id]
 # Print absolute path to a room's contact list file
 wape rooms path <id>
 
-# Patch/import contacts from external text file(s) into a room's list
-wape rooms patch <id> <file1.txt> [file2.txt...]
+# Patch/import contacts from external text/vCard (.vcf) file(s) into a room's list
+wape rooms patch <id> <file1.vcf> [file2.txt...]
+
+# Unpatch/remove contacts present in external text/vCard (.vcf) file(s) from a room's list
+wape rooms unpatch <id> <file1.vcf> [file2.txt...]
 
 # Add new groups to an existing room (filters out groups already in this room or other rooms)
 wape rooms add [id]
@@ -163,7 +166,7 @@ wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
 
 ### 5. Compare Contacts (Intersection) (`wape compare`)
 
-Finds contacts present in ALL target lists or rooms, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more lists simultaneously.
+Finds contacts present in ALL target lists, rooms, or vCard (`.vcf`) files, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more targets simultaneously.
 
 `wape compare` automatically maintains an order-independent record in `~/.wape/comparisons.json`. Any newly discovered common contacts are highlighted with a `[NEW]` badge, automatically copied to your clipboard (each item on its own new line with the `[NEW]` tag), and recorded so they are no longer marked as new on subsequent comparisons.
 
@@ -173,6 +176,9 @@ wape compare
 
 # Compare two or more specific lists or rooms
 wape compare <target1> <target2> [target3...]
+
+# Compare a VCF file with a room or list
+wape compare contacts.vcf my-room
 ```
 
 ---
@@ -204,22 +210,39 @@ wape stats <target1> <target2> <target3>
 
 ### 7. Patch & Import Contacts (`wape patch`)
 
-Import and merge contacts from external text file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
+Import and merge contacts from external text or vCard (`.vcf`) file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
 ```bash
-# Patch external text file(s) into global main list
-wape patch --main leads.txt extra.txt
+# Patch external text or VCF file(s) into global main list
+wape patch --main leads.txt contacts.vcf
 
-# Patch external text file(s) into global lock list
-wape patch --lock locked_numbers.txt
+# Patch external text or VCF file(s) into global lock list
+wape patch --lock locked_numbers.vcf
 
-# Patch external text file(s) into a specific room or custom list target
-wape patch <target> file1.txt file2.txt
+# Patch external text or VCF file(s) into a specific room or custom list target
+wape patch <target> contacts.vcf extra.txt
 ```
 
 ---
 
-### 8. Print Contacts (`wape print`)
+### 8. Unpatch & Remove Contacts (`wape unpatch`)
+
+Remove contacts present in external text or vCard (`.vcf`) file(s) from global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
+
+```bash
+# Unpatch/remove contacts in VCF file(s) from global main list
+wape unpatch --main contacts.vcf
+
+# Unpatch/remove contacts in VCF file(s) from global lock list
+wape unpatch --lock contacts.vcf
+
+# Unpatch/remove contacts in VCF file(s) from a specific room or custom list target
+wape unpatch <target> contacts.vcf
+```
+
+---
+
+### 9. Print Contacts (`wape print`)
 
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
@@ -229,7 +252,7 @@ wape print <target>
 
 ---
 
-### 9. Contact Lists Repository (`wape lists`)
+### 10. Contact Lists Repository (`wape lists`)
 
 Shows all contact list files currently managed in the active lists directory and their contact counts.
 
@@ -241,7 +264,7 @@ wape lists
 
 ### 10. WhatsApp Group Links Extractor (`wape links`)
 
-Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, presents new links in an alphabetical checklist to pick, records the chosen links into `links.json`, copies them automatically to your clipboard (strictly one link per new line), and prints them one per line to the terminal.
+Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, automatically records newly found links into `links.json`, prints them one per line to the terminal, and copies them to your clipboard.
 
 ```bash
 wape links
