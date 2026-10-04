@@ -141,11 +141,32 @@ wape scan <room-id>
 wape scan -t leads.txt
 wape scan <room-id> --main
 wape scan <room-id> --lock
+
+# Include ignored groups in ad-hoc selection
+wape scan --include-ignored
 ```
 
 ---
 
-### 4. One-Off Databases & Keys (`wape oneoff`)
+### 4. Ignored Groups Management (`wape ignore`, `wape ignored`, `wape unignore`)
+
+Mark personal, family, or irrelevant WhatsApp groups as ignored to prevent them from ever being added to any room (`wape rooms new`, `wape rooms add`) or appearing in ad-hoc scans (`wape scan`). Ignored groups are stored persistently by WhatsApp JID in `~/.wape/ignored-groups.json`.
+
+```bash
+# Interactively mark groups as ignored
+wape ignore
+
+# View all currently ignored groups with their communities and member counts
+wape ignored
+wape ignore list
+
+# Interactively unmark / restore previously ignored groups
+wape unignore
+```
+
+---
+
+### 5. One-Off Databases & Keys (`wape oneoff`)
 
 Scan temporary or one-off WhatsApp backup databases using a dedicated one-off decryption key without touching or overwriting `config.json`. The `--key` (`-k`) option is required, while `--backup` (`-b`) is optional (falls back to auto-discovery if omitted).
 
@@ -164,7 +185,7 @@ wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
 
 ---
 
-### 5. Compare Contacts (Intersection) (`wape compare`)
+### 6. Compare Contacts (Intersection) (`wape compare`)
 
 Finds contacts present in ALL target lists, rooms, or vCard (`.vcf`) files, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more targets simultaneously.
 
@@ -183,7 +204,7 @@ wape compare contacts.vcf my-room
 
 ---
 
-### 6. Stats & Union Breakdown (`wape stats`)
+### 7. Stats & Union Breakdown (`wape stats`)
 
 Computes aggregated stats totals across lists and rooms:
 
@@ -208,7 +229,7 @@ wape stats <target1> <target2> <target3>
 
 ---
 
-### 7. Patch & Import Contacts (`wape patch`)
+### 8. Patch & Import Contacts (`wape patch`)
 
 Import and merge contacts from external text or vCard (`.vcf`) file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
@@ -225,7 +246,7 @@ wape patch <target> contacts.vcf extra.txt
 
 ---
 
-### 8. Unpatch & Remove Contacts (`wape unpatch`)
+### 9. Unpatch & Remove Contacts (`wape unpatch`)
 
 Remove contacts present in external text or vCard (`.vcf`) file(s) from global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
@@ -242,7 +263,7 @@ wape unpatch <target> contacts.vcf
 
 ---
 
-### 9. Print Contacts (`wape print`)
+### 10. Print Contacts (`wape print`)
 
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
@@ -252,7 +273,7 @@ wape print <target>
 
 ---
 
-### 10. Contact Lists Repository (`wape lists`)
+### 11. Contact Lists Repository (`wape lists`)
 
 Shows all contact list files currently managed in the active lists directory and their contact counts.
 
@@ -262,7 +283,7 @@ wape lists
 
 ---
 
-### 10. WhatsApp Group Links Extractor (`wape links`)
+### 12. WhatsApp Group Links Extractor (`wape links`)
 
 Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, automatically records newly found links into `links.json`, prints them one per line to the terminal, and copies them to your clipboard.
 
@@ -284,5 +305,6 @@ Directory structure:
 
 - **`config.json`**: Global configuration (decryption key and optional default backup path).
 - **`rooms.json`**: Persistent storage for room definitions and group mappings.
+- **`ignored-groups.json`**: Persistent storage for groups excluded from rooms and scans.
 - **`links.json`**: Persistent storage for recorded WhatsApp group invite links.
 - **`lists/`**: Default repository for custom, global (`main.txt`, `lock.txt`), and room-level (`<id>.txt`) contact list files.

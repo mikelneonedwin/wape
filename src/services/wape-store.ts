@@ -450,3 +450,114 @@ export function saveNotedComparison(
   data[key] = sorted;
   writeFileSync(file, JSON.stringify(data, null, 2), "utf-8");
 }
+
+/**
+ * Ignored Groups store (~/.wape/ignored-groups.json)
+ */
+export interface IgnoredGroup {
+  jid: string;
+  subject: string;
+  communityName?: string | null;
+  ignoredAt: number;
+}
+
+export interface IgnoredGroupsConfigFile {
+  version: string;
+  groups: IgnoredGroup[];
+}
+
+export function getIgnoredGroupsConfigFile(): string {
+  return join(getWapeDir(), "ignored-groups.json");
+}
+
+export function getIgnoredGroups(): IgnoredGroup[] {
+  const file = getIgnoredGroupsConfigFile();
+  if (!existsSync(file)) {
+    return [];
+  }
+  try {
+    const raw = readFileSync(file, "utf-8");
+    const parsed = JSON.parse(raw) as
+      { groups?: IgnoredGroup[] } | IgnoredGroup[];
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return parsed.groups ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveIgnoredGroups(groups: IgnoredGroup[]): void {
+  const file = getIgnoredGroupsConfigFile();
+  const config: IgnoredGroupsConfigFile = {
+    version: "1.0.0",
+    groups,
+  };
+  writeFileSync(file, JSON.stringify(config, null, 2), "utf-8");
+}
+
+export function getIgnoredJidSet(): Set<string> {
+  const groups = getIgnoredGroups();
+  return new Set(groups.map((g) => g.jid.toLowerCase()));
+}
+
+export function isGroupIgnored(jid: string): boolean {
+  return getIgnoredJidSet().has(jid.toLowerCase().trim());
+}
+
+export function addIgnoredGroups(
+  newGroups: {
+    jid: string;
+    subject: string;
+    communityName?: string | null;
+  }[],
+): { addedCount: number; totalCount: number } {
+  const existing = getIgnoredGroups();
+  const map = new Map<string, IgnoredGroup>();
+  for (const g of existing) {
+    map.set(g.jid.toLowerCase(), g);
+  }
+
+  let addedCount = 0;
+  for (const ng of newGroups) {
+    const cleanJid = ng.jid.trim();
+    const key = cleanJid.toLowerCase();
+    if (!map.has(key)) {
+      map.set(key, {
+        jid: cleanJid,
+        subject: ng.subject.trim(),
+        communityName: ng.communityName ?? null,
+        ignoredAt: Date.now(),
+      });
+      addedCount++;
+    }
+  }
+
+  const updatedList = Array.from(map.values()).sort((a, b) =>
+    a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
+  );
+  saveIgnoredGroups(updatedList);
+
+  return {
+    addedCount,
+    totalCount: updatedList.length,
+  };
+}
+
+export function removeIgnoredGroups(jidsToRemove: string[]): {
+  removedCount: number;
+  totalCount: number;
+} {
+  const existing = getIgnoredGroups();
+  const removeSet = new Set(jidsToRemove.map((j) => j.toLowerCase().trim()));
+  const filtered = existing.filter((g) => !removeSet.has(g.jid.toLowerCase()));
+  const removedCount = existing.length - filtered.length;
+
+  saveIgnoredGroups(filtered);
+
+  return {
+    removedCount,
+    totalCount: filtered.length,
+  };
+}

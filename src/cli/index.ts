@@ -33,11 +33,17 @@ import {
   printRoomsTable,
   removeGroupsFromRoomInteractive,
 } from "./room-manager";
+import {
+  ignoreGroupsInteractive,
+  printIgnoredGroups,
+  unignoreGroupsInteractive,
+} from "./ignore-manager";
 import { searchCheckbox } from "./search-checkbox";
 import {
   deleteRoom,
   getAllKnownLists,
   getAppConfig,
+  getIgnoredJidSet,
   getLockListPath,
   getMainListPath,
   getRoomById,
@@ -286,6 +292,7 @@ program
   )
   .option("--main", "Force output to global main list")
   .option("--lock", "Force output to global lock list")
+  .option("--include-ignored", "Include ignored groups in ad-hoc selection")
   .action(
     async (
       target?: string,
@@ -295,6 +302,7 @@ program
         targetList?: string;
         main?: boolean;
         lock?: boolean;
+        includeIgnored?: boolean;
       },
     ) => {
       try {
@@ -360,12 +368,26 @@ program
             targetList: options?.targetList,
           });
         } else {
+          const ignoredJids = getIgnoredJidSet();
+          const availableGroups = options?.includeIgnored
+            ? groups
+            : groups.filter((g) => !ignoredJids.has(g.jidString.toLowerCase()));
+
+          if (availableGroups.length === 0) {
+            console.log(
+              pc.yellow(
+                "\nNo available groups found to scan. (All groups are marked as ignored; use --include-ignored to include them).\n",
+              ),
+            );
+            return;
+          }
+
           const targetJids = await searchCheckbox({
             message:
               "Select group chats (Type to filter, Space to check, Enter to submit):",
             pageSize: 16,
             required: true,
-            choices: groups.map((g) => ({
+            choices: availableGroups.map((g) => ({
               name: formatGroupLabel(g),
               value: g.jidRowId,
               category: g.communityName ?? "Standalone Groups",
@@ -1692,6 +1714,125 @@ program
           ),
         );
       }
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+/**
+ * Ignore Command
+ */
+program
+  .command("ignore [action]")
+  .description(
+    "Mark WhatsApp groups as ignored so they are excluded from rooms and scans, or list them with 'wape ignore list'",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(
+    async (
+      action?: string,
+      options?: {
+        backup?: string;
+        key?: string;
+      },
+    ) => {
+      try {
+        if (action?.toLowerCase() === "list") {
+          let groups: GroupSummary[] | undefined;
+          try {
+            const res = await loadDbAndGroups(options?.backup, options?.key);
+            groups = res.groups;
+          } catch {
+            // Backup not provided or not decryptable - fallback to stored metadata
+          }
+          printIgnoredGroups(groups);
+          return;
+        }
+
+        console.log(pc.cyan("\n📱 wape - WhatsApp Group Ignore Manager\n"));
+        console.log(pc.dim("Decrypting / preparing SQLite database..."));
+        const { groups } = await loadDbAndGroups(options?.backup, options?.key);
+
+        if (groups.length === 0) {
+          console.log(pc.yellow("No group chats found in the backup."));
+          return;
+        }
+
+        await ignoreGroupsInteractive(groups);
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
+/**
+ * Ignored Groups Overview Command
+ */
+program
+  .command("ignored")
+  .description("List all WhatsApp groups marked as ignored")
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(async (options?: { backup?: string; key?: string }) => {
+    try {
+      let groups: GroupSummary[] | undefined;
+      try {
+        const res = await loadDbAndGroups(options?.backup, options?.key);
+        groups = res.groups;
+      } catch {
+        // Backup not provided or not decryptable - fallback to stored metadata
+      }
+      printIgnoredGroups(groups);
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+/**
+ * Unignore Command
+ */
+program
+  .command("unignore")
+  .description(
+    "Unmark previously ignored groups so they can be added to rooms again",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(async (options?: { backup?: string; key?: string }) => {
+    try {
+      let groups: GroupSummary[] | undefined;
+      try {
+        const res = await loadDbAndGroups(options?.backup, options?.key);
+        groups = res.groups;
+      } catch {
+        // Fallback to unignore using stored metadata
+      }
+      await unignoreGroupsInteractive(groups);
     } catch (error) {
       console.error(
         pc.red(

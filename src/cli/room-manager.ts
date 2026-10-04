@@ -3,12 +3,14 @@ import pc from "picocolors";
 import { resolveRoomGroups, type GroupSummary } from "../services/extractor";
 import { readContactsFromFile } from "../services/file-manager";
 import {
+  getIgnoredJidSet,
   getRoomById,
   getRooms,
   resolveListFilePath,
   saveRoom,
   type Room,
 } from "../services/wape-store";
+import { printIgnoredGroups } from "./ignore-manager";
 import { searchCheckbox } from "./search-checkbox";
 
 function formatGroupLabel(group: {
@@ -217,6 +219,28 @@ export async function createRoomInteractive(
     return null;
   }
 
+  const rooms = getRooms();
+  const otherRoomsResolved = rooms.map((r) => resolveRoomGroups(r, groups));
+  const otherRoomJidStrings = new Set(
+    otherRoomsResolved.flatMap((res) => res.activeJidStrings),
+  );
+  const ignoredJids = getIgnoredJidSet();
+
+  const availableGroups = groups.filter(
+    (g) =>
+      !otherRoomJidStrings.has(g.jidString) &&
+      !ignoredJids.has(g.jidString.toLowerCase()),
+  );
+
+  if (availableGroups.length === 0) {
+    console.log(
+      pc.yellow(
+        `\nNo groups available to add to new room '${cleanId}'. (All groups are already in other rooms or marked as ignored).\n`,
+      ),
+    );
+    return null;
+  }
+
   console.log(pc.cyan(`\n🏠 Creating Room '${pc.bold(cleanId)}'\n`));
   console.log(pc.dim("Select the WhatsApp groups to include in this room:"));
 
@@ -224,7 +248,7 @@ export async function createRoomInteractive(
     message: `Select groups for room '${cleanId}' (Type to filter, Space to check, Enter to submit):`,
     pageSize: 16,
     required: true,
-    choices: groups.map((g) => ({
+    choices: availableGroups.map((g) => ({
       name: formatGroupLabel(g),
       value: g.jidString,
       category: g.communityName ?? "Standalone Groups",
@@ -306,17 +330,19 @@ export async function addGroupsToRoomInteractive(
     otherRoomsResolved.flatMap((res) => res.activeJidStrings),
   );
   const existingJidStrings = new Set(resolved.activeJidStrings);
+  const ignoredJids = getIgnoredJidSet();
 
   const availableGroups = groups.filter(
     (g) =>
       !existingJidStrings.has(g.jidString) &&
-      !otherRoomJidStrings.has(g.jidString),
+      !otherRoomJidStrings.has(g.jidString) &&
+      !ignoredJids.has(g.jidString.toLowerCase()),
   );
 
   if (availableGroups.length === 0) {
     console.log(
       pc.yellow(
-        `\nNo new groups available to add to room '${room.id}'. (All groups are already in this room or included in other rooms).\n`,
+        `\nNo new groups available to add to room '${room.id}'. (All groups are already in this room, included in other rooms, or marked as ignored).\n`,
       ),
     );
     return;
@@ -464,25 +490,28 @@ export async function removeGroupsFromRoomInteractive(
 export async function manageRoomsMenu(groups: GroupSummary[]): Promise<void> {
   while (true) {
     const rooms = getRooms();
-    const action = await select<"list" | "add" | "remove" | "exit">({
-      message: `🏠 Wape Room Management Menu (${rooms.length} rooms configured):`,
-      choices: [
-        { name: "📋 View all rooms", value: "list" },
-        ...(rooms.length > 0
-          ? [
-              {
-                name: "➕ Add new groups to a room",
-                value: "add" as const,
-              },
-              {
-                name: "➖ Remove existing groups from a room",
-                value: "remove" as const,
-              },
-            ]
-          : []),
-        { name: "🔙 Exit room manager", value: "exit" },
-      ],
-    });
+    const action = await select<"list" | "add" | "remove" | "ignored" | "exit">(
+      {
+        message: `🏠 Wape Room Management Menu (${rooms.length} rooms configured):`,
+        choices: [
+          { name: "📋 View all rooms", value: "list" },
+          ...(rooms.length > 0
+            ? [
+                {
+                  name: "➕ Add new groups to a room",
+                  value: "add" as const,
+                },
+                {
+                  name: "➖ Remove existing groups from a room",
+                  value: "remove" as const,
+                },
+              ]
+            : []),
+          { name: "🚫 View ignored groups", value: "ignored" as const },
+          { name: "🔙 Exit room manager", value: "exit" },
+        ],
+      },
+    );
 
     if (action === "list") {
       printRoomsTable(rooms, groups);
@@ -490,6 +519,8 @@ export async function manageRoomsMenu(groups: GroupSummary[]): Promise<void> {
       await addGroupsToRoomInteractive(groups);
     } else if (action === "remove") {
       await removeGroupsFromRoomInteractive(groups);
+    } else if (action === "ignored") {
+      printIgnoredGroups(groups);
     } else if (action === "exit") {
       break;
     }

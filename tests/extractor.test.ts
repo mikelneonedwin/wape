@@ -421,6 +421,69 @@ describe("Room Store and Management", () => {
 
     if (existsSync(linksFile)) unlinkSync(linksFile);
   });
+
+  it("saves, retrieves, deduplicates, and removes ignored groups in ignored-groups.json", async () => {
+    const {
+      addIgnoredGroups,
+      getIgnoredGroups,
+      getIgnoredJidSet,
+      getIgnoredGroupsConfigFile,
+      isGroupIgnored,
+      removeIgnoredGroups,
+    } = await import("../src/services/wape-store");
+    const { unlinkSync, existsSync } = await import("node:fs");
+
+    const ignoredFile = getIgnoredGroupsConfigFile();
+    if (existsSync(ignoredFile)) unlinkSync(ignoredFile);
+
+    const addRes1 = addIgnoredGroups([
+      {
+        jid: "120363011111111111@g.us",
+        subject: "Family Circle",
+        communityName: null,
+      },
+      {
+        jid: "120363022222222222@g.us",
+        subject: "Gaming Squad",
+        communityName: "Gamers Hub",
+      },
+    ]);
+    expect(addRes1.addedCount).toBe(2);
+    expect(addRes1.totalCount).toBe(2);
+
+    // Duplicate JID should be skipped
+    const addRes2 = addIgnoredGroups([
+      {
+        jid: "120363011111111111@g.us",
+        subject: "Family Circle Duplicate",
+      },
+      {
+        jid: "120363033333333333@g.us",
+        subject: "Neighborhood Watch",
+      },
+    ]);
+    expect(addRes2.addedCount).toBe(1);
+    expect(addRes2.totalCount).toBe(3);
+
+    expect(isGroupIgnored("120363011111111111@g.us")).toBe(true);
+    expect(isGroupIgnored("120363099999999999@g.us")).toBe(false);
+
+    const jidSet = getIgnoredJidSet();
+    expect(jidSet.has("120363011111111111@g.us")).toBe(true);
+    expect(jidSet.has("120363022222222222@g.us")).toBe(true);
+    expect(jidSet.has("120363033333333333@g.us")).toBe(true);
+
+    const allIgnored = getIgnoredGroups();
+    expect(allIgnored.length).toBe(3);
+
+    // Remove one group
+    const removeRes = removeIgnoredGroups(["120363022222222222@g.us"]);
+    expect(removeRes.removedCount).toBe(1);
+    expect(removeRes.totalCount).toBe(2);
+    expect(isGroupIgnored("120363022222222222@g.us")).toBe(false);
+
+    if (existsSync(ignoredFile)) unlinkSync(ignoredFile);
+  });
 });
 
 describe("WhatsApp Group Link Extractor", () => {
