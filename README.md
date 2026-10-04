@@ -117,6 +117,9 @@ wape rooms delete <id> [id2...]
 wape rooms compare
 wape rooms compare <id1> <id2> [id3...]
 
+# Compare rooms and bundle new contacts + new links to clipboard
+wape rooms bundle <id1> <id2> [id3...]
+
 # Scan ALL configured rooms (or pass specific room IDs)
 wape rooms scan
 wape rooms scan <id> [id2...]
@@ -204,7 +207,25 @@ wape compare contacts.vcf my-room
 
 ---
 
-### 7. Stats & Union Breakdown (`wape stats`)
+### 7. Bundle Contacts & Group Links (`wape bundle`)
+
+Performs a general room scan of all configured rooms to update their contact lists, compares the target rooms or lists to filter down strictly to **newly discovered common contacts**, extracts all **new WhatsApp group invite links** from the backup database, prints only the new items to the terminal, and copies both together to your clipboard in a single step.
+
+```bash
+# Compare rooms and bundle new contacts + new links
+wape bundle gunner norm
+wape bundle roomA roomB roomC
+
+# Bundle ad-hoc lists or .vcf files
+wape bundle list1.txt leads.vcf
+
+# Default (compares all configured rooms or main & lock)
+wape bundle
+```
+
+---
+
+### 8. Stats & Union Breakdown (`wape stats`)
 
 Computes aggregated stats totals across lists and rooms:
 
@@ -229,7 +250,7 @@ wape stats <target1> <target2> <target3>
 
 ---
 
-### 8. Patch & Import Contacts (`wape patch`)
+### 9. Patch & Import Contacts (`wape patch`)
 
 Import and merge contacts from external text or vCard (`.vcf`) file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
@@ -246,7 +267,7 @@ wape patch <target> contacts.vcf extra.txt
 
 ---
 
-### 9. Unpatch & Remove Contacts (`wape unpatch`)
+### 10. Unpatch & Remove Contacts (`wape unpatch`)
 
 Remove contacts present in external text or vCard (`.vcf`) file(s) from global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
@@ -263,7 +284,7 @@ wape unpatch <target> contacts.vcf
 
 ---
 
-### 10. Print Contacts (`wape print`)
+### 11. Print Contacts (`wape print`)
 
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
@@ -273,7 +294,7 @@ wape print <target>
 
 ---
 
-### 11. Contact Lists Repository (`wape lists`)
+### 12. Contact Lists Repository (`wape lists`)
 
 Shows all contact list files currently managed in the active lists directory and their contact counts.
 
@@ -283,7 +304,7 @@ wape lists
 
 ---
 
-### 12. WhatsApp Group Links Extractor (`wape links`)
+### 13. WhatsApp Group Links Extractor (`wape links`)
 
 Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, automatically records newly found links into `links.json`, prints them one per line to the terminal, and copies them to your clipboard.
 

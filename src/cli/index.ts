@@ -1137,6 +1137,77 @@ async function executeCompare(
   saveNotedComparison(filePaths, diff.currentCommon);
 }
 
+async function executeBundle(
+  targets: { label: string; filePath: string }[],
+  options?: {
+    backup?: string;
+    key?: string;
+  },
+) {
+  const { db, groups } = await loadDbAndGroups(options?.backup, options?.key);
+
+  // 1. General room scan (scan all configured rooms to update their list files)
+  const allRooms = getRooms();
+  if (allRooms.length > 0) {
+    console.log(
+      pc.cyan(`\n🏠 Scanning all ${allRooms.length} configured room(s)...\n`),
+    );
+    for (const room of allRooms) {
+      await scanSingleRoom(db, groups, room);
+    }
+  }
+
+  // 2. Calculate comparison diff (reads freshly updated room list files)
+  const filePaths = targets.map((t) => t.filePath);
+  const diff = getComparisonDiff(filePaths);
+  const newContacts = diff.newContacts;
+
+  // 3. Extract new group invite links from backup database
+  const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+  const recordedLinks = new Set(getSavedLinks());
+  const newLinks = allExtractedLinks.filter((link) => !recordedLinks.has(link));
+
+  const formattedNewContacts = newContacts.map(
+    (contact) => `${formatPhoneNumber(contact)}  [NEW]`,
+  );
+
+  for (const contactLine of formattedNewContacts) {
+    console.log(contactLine);
+  }
+
+  for (const link of newLinks) {
+    console.log(link);
+  }
+
+  const clipboardItems = [...formattedNewContacts, ...newLinks];
+  let copied = false;
+  if (clipboardItems.length > 0) {
+    copied = await copyToClipboard(clipboardItems.join("\n"));
+  }
+
+  saveNotedComparison(filePaths, diff.currentCommon);
+  if (newLinks.length > 0) {
+    saveLinks(newLinks);
+  }
+
+  if (clipboardItems.length === 0) {
+    console.log(
+      pc.yellow(
+        "\nNo new common contacts or new WhatsApp group invite links found.\n",
+      ),
+    );
+  } else if (copied) {
+    const parts: string[] = [];
+    if (newContacts.length > 0) {
+      parts.push(`${newContacts.length.toLocaleString()} new contact(s)`);
+    }
+    if (newLinks.length > 0) {
+      parts.push(`${newLinks.length.toLocaleString()} new group link(s)`);
+    }
+    console.log(pc.dim(`\n📋 Copied ${parts.join(" and ")} to clipboard.\n`));
+  }
+}
+
 roomCmd
   .command("compare [rooms...]")
   .description(
@@ -1199,6 +1270,74 @@ roomCmd
     }
   });
 
+roomCmd
+  .command("bundle [rooms...]")
+  .description(
+    "Compare rooms to extract only new common contacts alongside new WhatsApp group invite links, and copy both to clipboard",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(
+    async (roomIds?: string[], options?: { backup?: string; key?: string }) => {
+      try {
+        const allRooms = getRooms();
+        let targetRooms: Room[] = [];
+
+        if (!roomIds || roomIds.length === 0) {
+          if (allRooms.length < 2) {
+            console.error(
+              pc.red(
+                `\n❌ Error: Please provide at least two rooms to bundle (or configure at least 2 rooms).\n`,
+              ),
+            );
+            process.exit(1);
+          }
+          targetRooms = allRooms;
+        } else if (roomIds.length === 1) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Please provide at least two rooms to bundle.\n`,
+            ),
+          );
+          process.exit(1);
+        } else {
+          for (const id of roomIds) {
+            const r = getRoomById(id);
+            if (!r) {
+              console.error(
+                pc.red(
+                  `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+                ),
+              );
+              process.exit(1);
+            }
+            targetRooms.push(r);
+          }
+        }
+
+        const resolvedTargets = targetRooms.map((r) => {
+          const filePath = resolveListFilePath(r.targetList ?? `${r.id}.txt`);
+          return {
+            label: `Room '${r.id}' (${filePath})`,
+            filePath,
+          };
+        });
+
+        await executeBundle(resolvedTargets, options);
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
 // Default `wape rooms` without subcommands shows help
 roomCmd.action(() => {
   roomCmd.outputHelp();
@@ -1245,6 +1384,77 @@ program
       process.exit(1);
     }
   });
+
+/**
+ * Bundle Command
+ */
+program
+  .command("bundle [targets...]")
+  .description(
+    "Compare rooms or lists to extract only new common contacts alongside new WhatsApp group invite links, and copy both to clipboard",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(
+    async (
+      targets?: string[],
+      options?: {
+        backup?: string;
+        key?: string;
+      },
+    ) => {
+      try {
+        let resolvedTargets: { label: string; filePath: string }[] = [];
+
+        if (!targets || targets.length === 0) {
+          const allRooms = getRooms();
+          if (allRooms.length >= 2) {
+            resolvedTargets = allRooms.map((r) => {
+              const filePath = resolveListFilePath(
+                r.targetList ?? `${r.id}.txt`,
+              );
+              return {
+                label: `Room '${r.id}' (${filePath})`,
+                filePath,
+              };
+            });
+          } else {
+            resolvedTargets = [
+              {
+                label: `Main (${getMainListPath()})`,
+                filePath: getMainListPath(),
+              },
+              {
+                label: `Lock (${getLockListPath()})`,
+                filePath: getLockListPath(),
+              },
+            ];
+          }
+        } else if (targets.length === 1) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Please provide at least two targets to bundle.\n`,
+            ),
+          );
+          process.exit(1);
+        } else {
+          resolvedTargets = targets.map((t) => resolveTargetToList(t));
+        }
+
+        await executeBundle(resolvedTargets, options);
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
 
 /**
  * Stats Command
