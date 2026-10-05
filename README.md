@@ -71,11 +71,25 @@ wape config get
 # Set decryption key or custom backup path
 wape config set --key <64-hex-key>
 wape config set --backup <path>
+
+# Lock in two default rooms for bundle and compare operations
+wape config set --default-compare room1 room2
 ```
 
 ---
 
-### 2. Room Management (`wape rooms`)
+### 2. Contact Provenance & Origin Lookup (`wape source`)
+
+Inspect any Nigerian phone number to view all WhatsApp groups, parent communities, backup sources (primary vs. labeled one-offs), and lists it was identified in:
+
+```bash
+# Inspect contact origins
+wape source 08012345678
+```
+
+---
+
+### 3. Room Management (`wape rooms`)
 
 Rooms group related WhatsApp chats into persistent bundles stored in `~/.wape/rooms.json`. Each room automatically maps to its dedicated contact list file (`~/.wape/lists/<id>.txt`).
 
@@ -324,8 +338,6 @@ export WAPE_HOME="/path/to/custom/wape/dir"
 
 Directory structure:
 
-- **`config.json`**: Global configuration (decryption key and optional default backup path).
-- **`rooms.json`**: Persistent storage for room definitions and group mappings.
-- **`ignored-groups.json`**: Persistent storage for groups excluded from rooms and scans.
-- **`links.json`**: Persistent storage for recorded WhatsApp group invite links.
-- **`lists/`**: Default repository for custom, global (`main.txt`, `lock.txt`), and room-level (`<id>.txt`) contact list files.
+- **`wape.db`**: Embedded SQLite database containing all contact indexes, list memberships, room definitions, group mappings, provenance relations, saved links, and comparisons.
+- **`config.json`**: Global environment configuration (decryption key, backup path, and default comparison rooms).
+- **`lists/`**: Plain-text exports for global (`main.txt`, `lock.txt`) and room-level (`<id>.txt`) contact list files.

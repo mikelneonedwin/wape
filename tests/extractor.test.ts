@@ -1,7 +1,19 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 
-process.env.WAPE_HOME = join(tmpdir(), "test_wape_sandbox");
+const sandboxDir = join(tmpdir(), "test_wape_sandbox");
+if (existsSync(sandboxDir)) {
+  rmSync(sandboxDir, { recursive: true, force: true });
+}
+process.env.WAPE_HOME = sandboxDir;
 
 import { describe, expect, it } from "bun:test";
 import {
@@ -29,7 +41,6 @@ import {
   getWapeDir,
   saveNotedComparison,
 } from "../src/services/wape-store";
-import { unlinkSync, existsSync, writeFileSync, utimesSync } from "node:fs";
 
 describe("Nigerian Phone Parser & Formatter", () => {
   it("normalizes international +234 numbers", () => {
@@ -360,7 +371,7 @@ describe("Room Store and Management", () => {
 
     const renamedRoom = getRoomById("renamed-room-1");
     expect(renamedRoom).not.toBeNull();
-    expect(renamedRoom?.targetList).toBe("renamed-room-1.txt");
+    expect(renamedRoom?.targetList).toBe("renamed-room-1");
 
     // Clean up
     deleteRoom("renamed-room-1");
@@ -838,5 +849,278 @@ describe("Group and Community Extractor", () => {
       "0801 234 5678  [NEW]\n0802 345 6789  [NEW]",
     );
     expect(typeof res).toBe("boolean");
+  });
+
+  it("guarantees WhatsApp owner phone identification via JID type 11", async () => {
+    const { getDatabase } = await import("../src/db");
+    const { detectWhatsAppOwnerPhone } =
+      await import("../src/services/extractor");
+    const { Database } = await import("bun:sqlite");
+
+    const testDbPath = join(tmpdir(), `owner_test_${Date.now()}.db`);
+    const rawDb = new Database(testDbPath, { create: true });
+    rawDb.exec(`
+      CREATE TABLE jid (
+        _id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user TEXT NOT NULL,
+        server TEXT NOT NULL,
+        agent INTEGER,
+        device INTEGER,
+        type INTEGER,
+        raw_string TEXT
+      );
+      INSERT INTO jid (user, server, type) VALUES ('2348039876543', 's.whatsapp.net', 11);
+      INSERT INTO jid (user, server, type) VALUES ('2348011111111', 's.whatsapp.net', 0);
+    `);
+    rawDb.close();
+
+    const db = getDatabase(testDbPath);
+    const owner = await detectWhatsAppOwnerPhone(db);
+    expect(owner).toBe("+2348039876543");
+
+    unlinkSync(testDbPath);
+  });
+
+  it("records and retrieves contact group provenance across multiple backups and one-offs", async () => {
+    const { recordScanProvenance, getContactProvenance, saveContactsToList } =
+      await import("../src/services/wape-store");
+
+    saveContactsToList("main", new Set(["+2348012345678"]));
+    saveContactsToList("real-estate", new Set(["+2348012345678"]));
+
+    // 1. Primary scan
+    recordScanProvenance({
+      type: "primary",
+      label: "Primary Backup",
+      ownerPhone: "+2348031112222",
+      groups: [
+        {
+          jid: "120363011111111111@g.us",
+          subject: "Landlords Forum",
+          communityName: "Real Estate Hub",
+          phones: ["+2348012345678", "+2348099999999"],
+        },
+        {
+          jid: "120363022222222222@g.us",
+          subject: "Lekki Residents",
+          communityName: null,
+          phones: ["+2348012345678"],
+        },
+      ],
+    });
+
+    // 2. One-off scan for Alice
+    recordScanProvenance({
+      type: "oneoff",
+      label: "Alice Work Phone",
+      ownerPhone: "+2348039876543",
+      groups: [
+        {
+          jid: "120363033333333333@g.us",
+          subject: "Crypto Traders Lagos",
+          communityName: null,
+          phones: ["+2348012345678"],
+        },
+        {
+          jid: "120363044444444444@g.us",
+          subject: "Tech Founders Hub",
+          communityName: "Tech Hub",
+          phones: ["+2348012345678"],
+        },
+      ],
+    });
+
+    const provenance = getContactProvenance("08012345678");
+    expect(provenance).not.toBeNull();
+    expect(provenance?.phone).toBe("+2348012345678");
+    expect(provenance?.totalGroupsCount).toBe(4);
+    expect(provenance?.sources.length).toBe(2);
+
+    const oneoffSource = provenance?.sources.find(
+      (s) => s.sourceType === "oneoff",
+    );
+    expect(oneoffSource).toBeDefined();
+    expect(oneoffSource?.sourceLabel).toBe("Alice Work Phone");
+    expect(oneoffSource?.ownerPhone).toBe("+2348039876543");
+    expect(oneoffSource?.groups.length).toBe(2);
+
+    expect(provenance?.lists).toContain("main");
+    expect(provenance?.lists).toContain("real-estate");
+  });
+
+  it("migrates all legacy text lists, rooms, links, and ignored groups to SQLite on first run", async () => {
+    const originalHome = process.env.WAPE_HOME;
+    const migrationDir = join(tmpdir(), `test_migration_${Date.now()}`);
+    mkdirSync(join(migrationDir, "lists"), { recursive: true });
+
+    // Seed legacy text lists
+    writeFileSync(
+      join(migrationDir, "lists", "main.txt"),
+      "08031111111\n08032222222\n",
+    );
+    writeFileSync(
+      join(migrationDir, "lists", "vip.txt"),
+      "08032222222\n08033333333\n",
+    );
+
+    // Seed legacy rooms.json
+    writeFileSync(
+      join(migrationDir, "rooms.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        rooms: [
+          {
+            id: "migrated-room",
+            groupNames: ["Group A"],
+            groupIds: ["120363011111111111@g.us"],
+            targetList: "migrated-room.txt",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        ],
+      }),
+    );
+
+    // Seed legacy links.json
+    writeFileSync(
+      join(migrationDir, "links.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        links: ["https://chat.whatsapp.com/TEST12345"],
+      }),
+    );
+
+    // Seed legacy ignored-groups.json
+    writeFileSync(
+      join(migrationDir, "ignored-groups.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        groups: [
+          {
+            jid: "120363099999999999@g.us",
+            subject: "Spam Group",
+            ignoredAt: Date.now(),
+          },
+        ],
+      }),
+    );
+
+    process.env.WAPE_HOME = migrationDir;
+    const { getContactsFromList, getRooms, getSavedLinks, getIgnoredGroups } =
+      await import("../src/services/wape-store");
+
+    const mainContacts = getContactsFromList("main");
+    expect(mainContacts.size).toBe(2);
+    expect(mainContacts.has("+2348031111111")).toBe(true);
+
+    const vipContacts = getContactsFromList("vip");
+    expect(vipContacts.size).toBe(2);
+    expect(vipContacts.has("+2348033333333")).toBe(true);
+
+    const rooms = getRooms();
+    expect(rooms.length).toBe(1);
+    expect(rooms[0]?.id).toBe("migrated-room");
+
+    const links = getSavedLinks();
+    expect(links).toContain("https://chat.whatsapp.com/TEST12345");
+
+    const ignored = getIgnoredGroups();
+    expect(ignored.length).toBe(1);
+    expect(ignored[0]?.jid).toBe("120363099999999999@g.us");
+
+    // Clean up
+    rmSync(migrationDir, { recursive: true, force: true });
+    process.env.WAPE_HOME = originalHome;
+  });
+
+  it("stores, retrieves, and clears defaultCompareRooms in config.json", async () => {
+    const { saveAppConfig, getAppConfig } =
+      await import("../src/services/wape-store");
+
+    saveAppConfig({
+      defaultCompareRooms: ["room-alpha", "room-beta"],
+    });
+
+    let cfg = getAppConfig();
+    expect(cfg.defaultCompareRooms).toEqual(["room-alpha", "room-beta"]);
+
+    saveAppConfig({
+      clearDefaultCompare: true,
+    });
+
+    cfg = getAppConfig();
+    expect(cfg.defaultCompareRooms).toBeUndefined();
+  });
+
+  it("identifies international (non-Nigerian) WhatsApp account owners", async () => {
+    const { getDatabase } = await import("../src/db");
+    const { detectWhatsAppOwnerPhone } =
+      await import("../src/services/extractor");
+    const { normalizeOwnerPhoneNumber } = await import("../src/services/phone");
+    const { Database } = await import("bun:sqlite");
+
+    expect(normalizeOwnerPhoneNumber("14155552671")).toBe("+14155552671");
+    expect(normalizeOwnerPhoneNumber("+447911123456")).toBe("+447911123456");
+    expect(normalizeOwnerPhoneNumber("08031234567")).toBe("+2348031234567");
+
+    const testDbPath = join(tmpdir(), `intl_owner_test_${Date.now()}.db`);
+    const rawDb = new Database(testDbPath, { create: true });
+    rawDb.exec(`
+      CREATE TABLE jid (
+        _id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user TEXT NOT NULL,
+        server TEXT NOT NULL,
+        agent INTEGER,
+        device INTEGER,
+        type INTEGER,
+        raw_string TEXT
+      );
+      INSERT INTO jid (user, server, type) VALUES ('14155552671', 's.whatsapp.net', 11);
+    `);
+    rawDb.close();
+
+    const db = getDatabase(testDbPath);
+    const owner = await detectWhatsAppOwnerPhone(db);
+    expect(owner).toBe("+14155552671");
+
+    unlinkSync(testDbPath);
+  });
+
+  it("normalizes list file paths properly and preserves total contact counts across scans", async () => {
+    const { normalizeListName, resolveListFilePath, getWapeListsDir } =
+      await import("../src/services/wape-store");
+    const { mergeContactsIntoFile, readContactsFromFile } =
+      await import("../src/services/file-manager");
+
+    const listsDir = getWapeListsDir();
+    const fullNormPath = join(listsDir, "norm.txt");
+
+    expect(normalizeListName(fullNormPath)).toBe("norm");
+    expect(normalizeListName("norm.txt")).toBe("norm");
+    expect(normalizeListName("norm")).toBe("norm");
+    expect(normalizeListName(join(listsDir, "main.txt"))).toBe("main");
+
+    // Seed list 'sample' with 3 contacts
+    const samplePath = resolveListFilePath("sample.txt");
+    mergeContactsIntoFile(
+      samplePath,
+      new Set(["08031111111", "08032222222", "08033333333"]),
+    );
+
+    const read1 = readContactsFromFile(samplePath);
+    expect(read1.size).toBe(3);
+
+    // Scan again with an overlapping number using absolute path
+    const report = mergeContactsIntoFile(
+      samplePath,
+      new Set(["08033333333", "08034444444"]),
+    );
+
+    expect(report.uniqueExtractsCount).toBe(2);
+    expect(report.addedCount).toBe(1);
+    expect(report.totalCount).toBe(4);
+
+    const read2 = readContactsFromFile(samplePath);
+    expect(read2.size).toBe(4);
   });
 });

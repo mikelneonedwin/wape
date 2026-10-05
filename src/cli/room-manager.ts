@@ -1,12 +1,12 @@
 import { select } from "@inquirer/prompts";
 import pc from "picocolors";
 import { resolveRoomGroups, type GroupSummary } from "../services/extractor";
-import { readContactsFromFile } from "../services/file-manager";
 import {
+  getContactsFromList,
   getIgnoredJidSet,
   getRoomById,
   getRooms,
-  resolveListFilePath,
+  normalizeListName,
   saveRoom,
   type Room,
 } from "../services/wape-store";
@@ -41,10 +41,9 @@ export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
   console.log("=".repeat(75));
 
   rooms.forEach((r, idx) => {
-    const listFile = r.targetList ?? `${r.id}.txt`;
-    const filePath = resolveListFilePath(listFile);
-    const contacts = readContactsFromFile(filePath);
-    const listInfo = `${pc.green(listFile)} ${pc.yellow(`(${contacts.size} contacts)`)}`;
+    const listName = r.targetList ? normalizeListName(r.targetList) : r.id;
+    const contacts = getContactsFromList(listName);
+    const listInfo = `${pc.green(listName)} ${pc.yellow(`(${contacts.size.toLocaleString()} contacts)`)}`;
 
     const resolved = resolveRoomGroups(r, groups);
     const totalCount = resolved.resolvedItems.length;
@@ -77,12 +76,11 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
   console.log("=".repeat(75));
   console.log(`${pc.bold("Room ID:")}           ${pc.yellow(room.id)}`);
 
-  const listFile = room.targetList ?? `${room.id}.txt`;
-  const filePath = resolveListFilePath(listFile);
-  const contacts = readContactsFromFile(filePath);
-  console.log(
-    `${pc.bold("List File:")}         ${pc.green(listFile)} ${pc.dim(`(${filePath})`)}`,
-  );
+  const listName = room.targetList
+    ? normalizeListName(room.targetList)
+    : room.id;
+  const contacts = getContactsFromList(listName);
+  console.log(`${pc.bold("Target List:")}       ${pc.green(listName)}`);
   console.log(
     `${pc.bold("Contacts in List:")}  ${pc.magenta(contacts.size.toLocaleString() + " contacts")}`,
   );
@@ -260,7 +258,7 @@ export async function createRoomInteractive(
   );
   const groupNames = selectedGroups.map((g) => g.subject);
 
-  const targetList = `${cleanId}.txt`;
+  const targetList = cleanId;
 
   const room: Room = {
     id: cleanId,
@@ -276,7 +274,7 @@ export async function createRoomInteractive(
 
   console.log(
     pc.green(
-      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${selectedGroupJidStrings.length} groups! (List: ${resolveListFilePath(targetList)})\n`,
+      `\n✅ Room '${pc.bold(room.id)}' created successfully with ${selectedGroupJidStrings.length} groups! (List: ${room.id})\n`,
     ),
   );
   return room;

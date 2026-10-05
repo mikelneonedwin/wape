@@ -1,11 +1,15 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { normalizeNigerianPhoneNumber } from "./phone";
 import {
+  addContactsToList,
   getAllKnownLists,
+  getContactsFromList,
   getNotedComparison,
   getRoomById,
-  resolveListFilePath,
+  normalizeListName,
+  removeContactsFromList,
+  saveContactsToList,
 } from "./wape-store";
 
 /**
@@ -39,41 +43,50 @@ export function extractContactsFromVcfContent(content: string): Set<string> {
   return contacts;
 }
 
+export function isExplicitPhysicalFile(filePath: string): boolean {
+  if (filePath.toLowerCase().endsWith(".vcf")) return true;
+  if (filePath.includes("/") || filePath.includes("\\")) {
+    return true;
+  }
+  return false;
+}
+
 export function readContactsFromFile(filePath: string): Set<string> {
   const fullPath = resolve(filePath);
-  if (!existsSync(fullPath)) {
-    return new Set<string>();
-  }
-
-  const content = readFileSync(fullPath, "utf-8");
-
-  if (fullPath.toLowerCase().endsWith(".vcf")) {
+  if (fullPath.toLowerCase().endsWith(".vcf") && existsSync(fullPath)) {
+    const content = readFileSync(fullPath, "utf-8");
     return extractContactsFromVcfContent(content);
   }
 
-  const lines = content.split(/\r?\n/);
-  const contacts = new Set<string>();
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const normalized = normalizeNigerianPhoneNumber(trimmed);
-    if (normalized) {
-      contacts.add(normalized);
+  // If explicit physical file outside (e.g. external text file passed to patch/unpatch)
+  if (
+    (filePath.includes("/") || filePath.includes("\\")) &&
+    existsSync(fullPath)
+  ) {
+    const content = readFileSync(fullPath, "utf-8");
+    const lines = content.split(/\r?\n/);
+    const contacts = new Set<string>();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const normalized = normalizeNigerianPhoneNumber(trimmed);
+      if (normalized) {
+        contacts.add(normalized);
+      }
     }
+    return contacts;
   }
 
-  return contacts;
+  const listName = normalizeListName(filePath);
+  return getContactsFromList(listName);
 }
 
 export function writeContactsToFile(
   filePath: string,
   contacts: Set<string>,
 ): void {
-  const fullPath = resolve(filePath);
-  const sorted = Array.from(contacts).sort();
-  const content = sorted.length > 0 ? `${sorted.join("\n")}\n` : "";
-  writeFileSync(fullPath, content, "utf-8");
+  const listName = normalizeListName(filePath);
+  saveContactsToList(listName, contacts);
 }
 
 export interface MergeResult {
@@ -86,24 +99,8 @@ export function mergeContactsIntoFile(
   filePath: string,
   newContacts: Set<string>,
 ): MergeResult {
-  const existingContacts = readContactsFromFile(filePath);
-  const initialSize = existingContacts.size;
-
-  const union = new Set<string>(existingContacts);
-  for (const contact of newContacts) {
-    union.add(contact);
-  }
-
-  const addedCount = union.size - initialSize;
-  const totalCount = union.size;
-
-  writeContactsToFile(filePath, union);
-
-  return {
-    uniqueExtractsCount: newContacts.size,
-    addedCount,
-    totalCount,
-  };
+  const listName = normalizeListName(filePath);
+  return addContactsToList(listName, newContacts);
 }
 
 export interface UnmergeResult {
@@ -116,26 +113,8 @@ export function unmergeContactsFromFile(
   filePath: string,
   contactsToRemove: Set<string>,
 ): UnmergeResult {
-  const existingContacts = readContactsFromFile(filePath);
-  const initialSize = existingContacts.size;
-
-  const remaining = new Set<string>();
-  for (const contact of existingContacts) {
-    if (!contactsToRemove.has(contact)) {
-      remaining.add(contact);
-    }
-  }
-
-  const removedCount = initialSize - remaining.size;
-  const totalCount = remaining.size;
-
-  writeContactsToFile(filePath, remaining);
-
-  return {
-    uniqueExtractsCount: contactsToRemove.size,
-    removedCount,
-    totalCount,
-  };
+  const listName = normalizeListName(filePath);
+  return removeContactsFromList(listName, contactsToRemove);
 }
 
 export function getCommonContacts(filePaths: string[]): string[] {
@@ -236,7 +215,7 @@ export function getGlobalInventory(): GlobalInventorySummary {
   const grandUnion = new Set<string>();
 
   const listSummaries = knownLists.map((item) => {
-    const contacts = readContactsFromFile(item.path);
+    const contacts = getContactsFromList(item.path);
     for (const c of contacts) {
       grandUnion.add(c);
     }
@@ -262,16 +241,18 @@ export function resolveTargetToList(target: string): {
 } {
   const room = getRoomById(target);
   if (room) {
-    const listFileName = room.targetList ?? `${room.id}.txt`;
-    const listPath = resolveListFilePath(listFileName);
+    const listName = room.targetList
+      ? normalizeListName(room.targetList)
+      : room.id;
     return {
-      label: `Room '${room.id}' -> ${listFileName}`,
-      filePath: listPath,
+      label: `Room '${room.id}'`,
+      filePath: listName,
     };
   }
 
+  const clean = normalizeListName(target);
   return {
-    label: target,
-    filePath: resolveListFilePath(target),
+    label: clean,
+    filePath: clean,
   };
 }

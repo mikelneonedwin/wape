@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { input, select } from "@inquirer/prompts";
 import { Command } from "commander";
@@ -8,7 +8,8 @@ import { getDatabase } from "../db";
 import { ensureDecryptedDatabase } from "../services/decryptor";
 import { copyToClipboard } from "../services/clipboard";
 import {
-  extractNigerianNumbersFromGroups,
+  detectWhatsAppOwnerPhone,
+  extractNigerianNumbersWithGroupMapping,
   extractWhatsAppGroupLinks,
   fetchAllGroups,
   resolveRoomGroups,
@@ -24,7 +25,10 @@ import {
   resolveTargetToList,
   unmergeContactsFromFile,
 } from "../services/file-manager";
-import { formatPhoneNumber } from "../services/phone";
+import {
+  formatPhoneNumber,
+  normalizeNigerianPhoneNumber,
+} from "../services/phone";
 import {
   addGroupsToRoomInteractive,
   createRoomInteractive,
@@ -43,20 +47,22 @@ import {
   deleteRoom,
   getAllKnownLists,
   getAppConfig,
+  getContactProvenance,
+  getContactsFromList,
   getIgnoredJidSet,
-  getLockListPath,
-  getMainListPath,
   getRoomById,
   getRooms,
   getSavedLinks,
   getSavedLinksFile,
   getWapeConfigFile,
-  getWapeListsDir,
+  normalizeListName,
+  recordScanProvenance,
   renameRoomId,
-  resolveListFilePath,
   saveAppConfig,
   saveLinks,
   saveNotedComparison,
+  type AppConfig,
+  type RecordProvenanceGroupItem,
   type Room,
 } from "../services/wape-store";
 
@@ -104,6 +110,10 @@ async function executeGroupExport(
   options?: {
     forcedTargetList?: string;
     roomContext?: Room | null;
+    scanType?: "primary" | "oneoff";
+    sourceLabel?: string;
+    ownerPhone?: string | null;
+    allGroups?: GroupSummary[];
   },
 ) {
   if (targetGroupJids.length === 0) {
@@ -144,77 +154,101 @@ async function executeGroupExport(
     }
   }
 
-  let targetFilePath: string;
+  let targetListName: string;
 
   if (options?.forcedTargetList) {
-    targetFilePath = resolveListFilePath(options.forcedTargetList);
+    targetListName = normalizeListName(options.forcedTargetList);
   } else if (options?.roomContext) {
-    // Room scans automatically use the room's dedicated list (${room.id}.txt)
-    const roomListFile =
-      options.roomContext.targetList ?? `${options.roomContext.id}.txt`;
-    targetFilePath = resolveListFilePath(roomListFile);
+    targetListName = options.roomContext.targetList
+      ? normalizeListName(options.roomContext.targetList)
+      : options.roomContext.id;
   } else {
     const knownLists = getAllKnownLists();
     const listChoices = [
       {
-        name: `Main File (${pc.bold(getMainListPath())})`,
-        value: getMainListPath(),
-        description: `Primary global contacts list in ${getMainListPath()}`,
+        name: `Main List (${pc.bold("main")})`,
+        value: "main",
+        description: "Primary global contacts list",
       },
       {
-        name: `Lock File (${pc.bold(getLockListPath())})`,
-        value: getLockListPath(),
-        description: `Secondary/lock global contacts list in ${getLockListPath()}`,
+        name: `Lock List (${pc.bold("lock")})`,
+        value: "lock",
+        description: "Secondary/lock global contacts list",
       },
       ...knownLists
         .filter((l) => !l.isGlobal)
         .map((l) => {
-          const contacts = readContactsFromFile(l.path);
+          const contacts = getContactsFromList(l.name);
           return {
             name: `${pc.bold(l.name)} ${pc.yellow(`(${contacts.size.toLocaleString()} contacts)`)}`,
-            value: l.path,
-            description: l.path,
+            value: l.name,
+            description: `List: ${l.name}`,
           };
         }),
       {
-        name: `Custom List (specify file name in ${getWapeListsDir()}/)`,
+        name: "Custom List (enter list name)",
         value: "__custom__",
-        description: `Create or append to a custom list file in ${getWapeListsDir()}/`,
+        description: "Create or append to a custom list in database",
       },
     ];
 
     console.log("");
     const choice = await select<string>({
-      message: "Select destination text file:",
+      message: "Select destination list:",
       choices: listChoices,
     });
 
     if (choice === "__custom__") {
       const customName = await input({
-        message: "Enter custom list name (e.g. leads.txt):",
+        message: "Enter custom list name (e.g. leads):",
         validate: (val) => (val.trim() ? true : "List name cannot be empty."),
       });
-      targetFilePath = resolveListFilePath(customName.trim());
+      targetListName = normalizeListName(customName.trim());
     } else {
-      targetFilePath = choice;
+      targetListName = choice;
     }
   }
 
   console.log(
     pc.dim("\nExtracting and sieving unique Nigerian phone numbers..."),
   );
-  const uniqueExtracts = await extractNigerianNumbersFromGroups(
-    db,
-    targetGroupJids,
-  );
+  const { uniqueNigerianNumbers: uniqueExtracts, groupPhonesMap } =
+    await extractNigerianNumbersWithGroupMapping(db, targetGroupJids);
 
-  const mergeResult = mergeContactsIntoFile(targetFilePath, uniqueExtracts);
+  const mergeResult = mergeContactsIntoFile(targetListName, uniqueExtracts);
+
+  // Record provenance in SQLite
+  try {
+    const provenanceGroups: RecordProvenanceGroupItem[] = targetGroupJids.map(
+      (jidRowId) => {
+        const gMeta = options?.allGroups?.find((g) => g.jidRowId === jidRowId);
+        const phones = Array.from(groupPhonesMap.get(jidRowId) ?? []);
+        return {
+          jid: gMeta?.jidString ?? String(jidRowId),
+          subject: gMeta?.subject ?? `Group ${jidRowId}`,
+          communityName: gMeta?.communityName ?? null,
+          phones,
+        };
+      },
+    );
+
+    recordScanProvenance({
+      type: options?.scanType ?? "primary",
+      label:
+        options?.sourceLabel ??
+        (options?.scanType === "oneoff" ? "One-off Backup" : "Primary Backup"),
+      ownerPhone: options?.ownerPhone ?? null,
+      groups: provenanceGroups,
+    });
+  } catch (_err) {
+    // Graceful fallback if provenance record encounters any issue
+  }
 
   console.log(pc.green("\n" + "=".repeat(52)));
   console.log(pc.bold(pc.green("                 EXPORT REPORT")));
   console.log("=".repeat(52));
   console.log(
-    `${pc.bold("Target List File:")}        ${pc.cyan(targetFilePath)}`,
+    `${pc.bold("Target List:")}             ${pc.cyan(targetListName)}`,
   );
   console.log(
     `${pc.bold("Selected Groups:")}         ${targetGroupJids.length}`,
@@ -226,7 +260,7 @@ async function executeGroupExport(
     `${pc.bold("New Contacts Added:")}      ${pc.green("+" + mergeResult.addedCount.toLocaleString())}`,
   );
   console.log(
-    `${pc.bold("Total Contacts in File:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
+    `${pc.bold("Total Contacts in List:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
   );
   console.log("=".repeat(52) + "\n");
 }
@@ -235,7 +269,14 @@ async function scanSingleRoom(
   db: ReturnType<typeof getDatabase>,
   groups: Awaited<ReturnType<typeof fetchAllGroups>>,
   room: Room,
-  opts?: { main?: boolean; lock?: boolean; targetList?: string },
+  opts?: {
+    main?: boolean;
+    lock?: boolean;
+    targetList?: string;
+    scanType?: "primary" | "oneoff";
+    sourceLabel?: string;
+    ownerPhone?: string | null;
+  },
 ) {
   const resolved = resolveRoomGroups(room, groups);
   const activeJids = resolved.activeJidRowIds;
@@ -263,13 +304,17 @@ async function scanSingleRoom(
   }
 
   let forcedList: string | undefined;
-  if (opts?.targetList) forcedList = resolveListFilePath(opts.targetList);
-  else if (opts?.main) forcedList = getMainListPath();
-  else if (opts?.lock) forcedList = getLockListPath();
+  if (opts?.targetList) forcedList = normalizeListName(opts.targetList);
+  else if (opts?.main) forcedList = "main";
+  else if (opts?.lock) forcedList = "lock";
 
   await executeGroupExport(db, activeJids, labels, {
     forcedTargetList: forcedList,
     roomContext: room,
+    scanType: opts?.scanType ?? "primary",
+    sourceLabel: opts?.sourceLabel ?? `Room: ${room.id}`,
+    ownerPhone: opts?.ownerPhone ?? null,
+    allGroups: groups,
   });
 }
 
@@ -401,15 +446,18 @@ program
 
           let forcedList: string | undefined;
           if (options?.targetList) {
-            forcedList = resolveListFilePath(options.targetList);
+            forcedList = normalizeListName(options.targetList);
           } else if (options?.main) {
-            forcedList = getMainListPath();
+            forcedList = "main";
           } else if (options?.lock) {
-            forcedList = getLockListPath();
+            forcedList = "lock";
           }
 
           await executeGroupExport(db, targetJids, selectedLabels, {
             forcedTargetList: forcedList,
+            scanType: "primary",
+            sourceLabel: "Primary Backup",
+            allGroups: groups,
           });
         }
       } catch (error) {
@@ -449,6 +497,10 @@ oneoffCmd
     "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
   )
   .option(
+    "-l, --label <label>",
+    "Label for this one-off backup (e.g. Alice - Work Phone)",
+  )
+  .option(
     "-t, --target-list <nameOrPath>",
     "Direct output to a specific list file or name",
   )
@@ -460,6 +512,7 @@ oneoffCmd
       options?: {
         key: string;
         backup?: string;
+        label?: string;
         targetList?: string;
         main?: boolean;
         lock?: boolean;
@@ -482,13 +535,26 @@ oneoffCmd
           return;
         }
 
+        const detectedOwner = await detectWhatsAppOwnerPhone(db);
+        let backupLabel = options?.label?.trim();
+        if (!backupLabel) {
+          const ownerPromptText = detectedOwner
+            ? ` (detected owner: ${formatPhoneNumber(detectedOwner)})`
+            : "";
+          backupLabel = await input({
+            message: `Enter a label for this one-off backup${ownerPromptText}:`,
+            validate: (val) =>
+              val.trim() ? true : "Backup label cannot be empty.",
+          });
+        }
+
         let forcedList: string | undefined;
         if (options?.targetList) {
-          forcedList = resolveListFilePath(options.targetList);
+          forcedList = normalizeListName(options.targetList);
         } else if (options?.main) {
-          forcedList = getMainListPath();
+          forcedList = "main";
         } else if (options?.lock) {
-          forcedList = getLockListPath();
+          forcedList = "lock";
         }
 
         let roomToScan: Room | null = null;
@@ -510,6 +576,9 @@ oneoffCmd
             main: options?.main,
             lock: options?.lock,
             targetList: options?.targetList,
+            scanType: "oneoff",
+            sourceLabel: backupLabel.trim(),
+            ownerPhone: detectedOwner,
           });
         } else {
           const targetJids = await searchCheckbox({
@@ -531,6 +600,10 @@ oneoffCmd
 
           await executeGroupExport(db, targetJids, selectedLabels, {
             forcedTargetList: forcedList,
+            scanType: "oneoff",
+            sourceLabel: backupLabel.trim(),
+            ownerPhone: detectedOwner,
+            allGroups: groups,
           });
         }
       } catch (error) {
@@ -800,7 +873,7 @@ roomCmd
   .command("rename <oldId> <newId>")
   .alias("reid")
   .alias("mv")
-  .description("Assign a new ID to a room and rename its contact list file")
+  .description("Assign a new ID to a room")
   .action((oldId: string, newId: string) => {
     const res = renameRoomId(oldId, newId);
     if (!res.success) {
@@ -809,21 +882,8 @@ roomCmd
     }
 
     console.log(
-      pc.green(`\n✅ Room '${oldId}' renamed to '${newId}' successfully.`),
+      pc.green(`\n✅ Room '${oldId}' renamed to '${newId}' successfully.\n`),
     );
-    if (res.listRenamed) {
-      console.log(
-        pc.dim(
-          `📁 Contact list file renamed from ${resolveListFilePath(`${oldId}.txt`)} to ${resolveListFilePath(`${newId}.txt`)}\n`,
-        ),
-      );
-    } else {
-      console.log(
-        pc.dim(
-          `📁 List path updated to ${resolveListFilePath(`${newId}.txt`)}\n`,
-        ),
-      );
-    }
   });
 
 roomCmd
@@ -832,40 +892,9 @@ roomCmd
   .action(async (id: string, extraIds?: string[]) => {
     const allIds = [id, ...(extraIds ?? [])];
     for (const targetId of allIds) {
-      const room = getRoomById(targetId);
-      const listPath = resolveListFilePath(
-        room?.targetList ?? `${targetId}.txt`,
-      );
-      const hasListFile = existsSync(listPath);
-
       const success = deleteRoom(targetId);
       if (success) {
         console.log(pc.green(`\n🗑️ Room '${targetId}' deleted successfully.`));
-
-        if (hasListFile) {
-          const deleteListAnswer = await input({
-            message: `Delete associated contact list file (${pc.cyan(listPath)})? (yes/no):`,
-            validate: (val) => {
-              const v = val.trim().toLowerCase();
-              if (v === "yes" || v === "y" || v === "no" || v === "n")
-                return true;
-              return "Please enter 'yes' (or 'y') or 'no' (or 'n').";
-            },
-          });
-
-          if (["yes", "y"].includes(deleteListAnswer.trim().toLowerCase())) {
-            try {
-              unlinkSync(listPath);
-              console.log(pc.dim(`📁 Deleted contact list file: ${listPath}`));
-            } catch (err) {
-              console.error(
-                pc.red(
-                  `Failed to delete list file: ${err instanceof Error ? err.message : String(err)}`,
-                ),
-              );
-            }
-          }
-        }
       } else {
         console.log(pc.yellow(`\nRoom '${targetId}' not found.`));
       }
@@ -875,7 +904,7 @@ roomCmd
 
 roomCmd
   .command("path <id>")
-  .description("Get the absolute path to a room's contact list file")
+  .description("Get the contact list name for a room")
   .action((id: string) => {
     const room = getRoomById(id);
     if (!room) {
@@ -886,8 +915,10 @@ roomCmd
       );
       process.exit(1);
     }
-    const listPath = resolveListFilePath(room.targetList ?? `${room.id}.txt`);
-    console.log(listPath);
+    const listName = room.targetList
+      ? normalizeListName(room.targetList)
+      : room.id;
+    console.log(listName);
   });
 
 roomCmd
@@ -907,9 +938,9 @@ roomCmd
         process.exit(1);
       }
 
-      const targetListPath = resolveListFilePath(
-        room.targetList ?? `${room.id}.txt`,
-      );
+      const targetListName = room.targetList
+        ? normalizeListName(room.targetList)
+        : room.id;
       const allNewContacts = new Set<string>();
 
       for (const f of files) {
@@ -933,13 +964,13 @@ roomCmd
         return;
       }
 
-      const mergeResult = mergeContactsIntoFile(targetListPath, allNewContacts);
+      const mergeResult = mergeContactsIntoFile(targetListName, allNewContacts);
 
       console.log(pc.green("\n" + "=".repeat(58)));
       console.log(pc.bold(pc.green(`        PATCH REPORT: Room '${room.id}'`)));
       console.log("=".repeat(58));
       console.log(
-        `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+        `${pc.bold("Target List:")}             ${pc.cyan(targetListName)}`,
       );
       console.log(`${pc.bold("Source File(s):")}          ${files.join(", ")}`);
       console.log(
@@ -979,9 +1010,9 @@ roomCmd
         process.exit(1);
       }
 
-      const targetListPath = resolveListFilePath(
-        room.targetList ?? `${room.id}.txt`,
-      );
+      const targetListName = room.targetList
+        ? normalizeListName(room.targetList)
+        : room.id;
       const allRemoveContacts = new Set<string>();
 
       for (const f of files) {
@@ -1006,7 +1037,7 @@ roomCmd
       }
 
       const unmergeResult = unmergeContactsFromFile(
-        targetListPath,
+        targetListName,
         allRemoveContacts,
       );
 
@@ -1016,7 +1047,7 @@ roomCmd
       );
       console.log("=".repeat(58));
       console.log(
-        `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+        `${pc.bold("Target List:")}             ${pc.cyan(targetListName)}`,
       );
       console.log(`${pc.bold("Source File(s):")}          ${files.join(", ")}`);
       console.log(
@@ -1219,15 +1250,24 @@ roomCmd
       let targetRooms: Room[] = [];
 
       if (!roomIds || roomIds.length === 0) {
-        if (allRooms.length < 2) {
-          console.error(
-            pc.red(
-              `\n❌ Error: Please provide at least two rooms to compare (or configure at least 2 rooms).\n`,
-            ),
-          );
-          process.exit(1);
+        const cfg = getAppConfig();
+        if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
+          for (const id of cfg.defaultCompareRooms) {
+            const r = getRoomById(id);
+            if (r) targetRooms.push(r);
+          }
         }
-        targetRooms = allRooms;
+        if (targetRooms.length < 2) {
+          if (allRooms.length < 2) {
+            console.error(
+              pc.red(
+                `\n❌ Error: Please provide at least two rooms to compare (or configure at least 2 rooms).\n`,
+              ),
+            );
+            process.exit(1);
+          }
+          targetRooms = allRooms;
+        }
       } else if (roomIds.length === 1) {
         console.error(
           pc.red(`\n❌ Error: Please provide at least two rooms to compare.\n`),
@@ -1249,10 +1289,10 @@ roomCmd
       }
 
       const resolvedTargets = targetRooms.map((r) => {
-        const filePath = resolveListFilePath(r.targetList ?? `${r.id}.txt`);
+        const listName = r.targetList ? normalizeListName(r.targetList) : r.id;
         return {
-          label: `Room '${r.id}' (${filePath})`,
-          filePath,
+          label: `Room '${r.id}'`,
+          filePath: listName,
         };
       });
 
@@ -1287,15 +1327,24 @@ roomCmd
         let targetRooms: Room[] = [];
 
         if (!roomIds || roomIds.length === 0) {
-          if (allRooms.length < 2) {
-            console.error(
-              pc.red(
-                `\n❌ Error: Please provide at least two rooms to bundle (or configure at least 2 rooms).\n`,
-              ),
-            );
-            process.exit(1);
+          const cfg = getAppConfig();
+          if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
+            for (const id of cfg.defaultCompareRooms) {
+              const r = getRoomById(id);
+              if (r) targetRooms.push(r);
+            }
           }
-          targetRooms = allRooms;
+          if (targetRooms.length < 2) {
+            if (allRooms.length < 2) {
+              console.error(
+                pc.red(
+                  `\n❌ Error: Please provide at least two rooms to bundle (or configure at least 2 rooms).\n`,
+                ),
+              );
+              process.exit(1);
+            }
+            targetRooms = allRooms;
+          }
         } else if (roomIds.length === 1) {
           console.error(
             pc.red(
@@ -1319,10 +1368,12 @@ roomCmd
         }
 
         const resolvedTargets = targetRooms.map((r) => {
-          const filePath = resolveListFilePath(r.targetList ?? `${r.id}.txt`);
+          const listName = r.targetList
+            ? normalizeListName(r.targetList)
+            : r.id;
           return {
-            label: `Room '${r.id}' (${filePath})`,
-            filePath,
+            label: `Room '${r.id}'`,
+            filePath: listName,
           };
         });
 
@@ -1356,10 +1407,17 @@ program
       let resolvedTargets: { label: string; filePath: string }[] = [];
 
       if (!targets || targets.length === 0) {
-        resolvedTargets = [
-          { label: `Main (${getMainListPath()})`, filePath: getMainListPath() },
-          { label: `Lock (${getLockListPath()})`, filePath: getLockListPath() },
-        ];
+        const cfg = getAppConfig();
+        if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
+          resolvedTargets = cfg.defaultCompareRooms.map((t) =>
+            resolveTargetToList(t),
+          );
+        } else {
+          resolvedTargets = [
+            { label: "Main List", filePath: "main" },
+            { label: "Lock List", filePath: "lock" },
+          ];
+        }
       } else if (targets.length === 1) {
         console.error(
           pc.red(
@@ -1410,28 +1468,35 @@ program
         let resolvedTargets: { label: string; filePath: string }[] = [];
 
         if (!targets || targets.length === 0) {
-          const allRooms = getRooms();
-          if (allRooms.length >= 2) {
-            resolvedTargets = allRooms.map((r) => {
-              const filePath = resolveListFilePath(
-                r.targetList ?? `${r.id}.txt`,
-              );
-              return {
-                label: `Room '${r.id}' (${filePath})`,
-                filePath,
-              };
-            });
+          const cfg = getAppConfig();
+          if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
+            resolvedTargets = cfg.defaultCompareRooms.map((t) =>
+              resolveTargetToList(t),
+            );
           } else {
-            resolvedTargets = [
-              {
-                label: `Main (${getMainListPath()})`,
-                filePath: getMainListPath(),
-              },
-              {
-                label: `Lock (${getLockListPath()})`,
-                filePath: getLockListPath(),
-              },
-            ];
+            const allRooms = getRooms();
+            if (allRooms.length >= 2) {
+              resolvedTargets = allRooms.map((r) => {
+                const listName = r.targetList
+                  ? normalizeListName(r.targetList)
+                  : r.id;
+                return {
+                  label: `Room '${r.id}'`,
+                  filePath: listName,
+                };
+              });
+            } else {
+              resolvedTargets = [
+                {
+                  label: "Main List",
+                  filePath: "main",
+                },
+                {
+                  label: "Lock List",
+                  filePath: "lock",
+                },
+              ];
+            }
           }
         } else if (targets.length === 1) {
           console.error(
@@ -1470,11 +1535,7 @@ program
         // Global inventory across all lists
         const globalSummary = getGlobalInventory();
 
-        console.log(
-          pc.cyan(
-            `\n📊 wape Global Lists Stats Summary (${getWapeListsDir()}/)\n`,
-          ),
-        );
+        console.log(pc.cyan(`\n📊 wape Lists Stats Summary\n`));
         console.log("=".repeat(65));
         console.log(
           `${pc.bold("List Name".padEnd(35))} ${pc.bold("Contacts Count")}`,
@@ -1506,7 +1567,7 @@ program
         );
         console.log("=".repeat(65));
         console.log(
-          `${pc.bold("Target File:")}         ${pc.green(target.filePath)}`,
+          `${pc.bold("Target:")}               ${pc.green(target.label)}`,
         );
         console.log(
           `${pc.bold("Total Unique Contacts:")} ${pc.magenta(contacts.size.toLocaleString())}`,
@@ -1527,10 +1588,10 @@ program
         console.log(pc.bold(pc.cyan("📊 TWO-WAY LIST COMPARISON")));
         console.log("=".repeat(65));
         console.log(
-          `  ${pc.bold(labelA?.padEnd(28) ?? "List A")}: ${pc.yellow(stats.countA.toLocaleString().padStart(8))} contacts ${pc.dim(`(${filePaths[0]})`)}`,
+          `  ${pc.bold(labelA?.padEnd(28) ?? "Target A")}: ${pc.yellow(stats.countA.toLocaleString().padStart(8))} contacts`,
         );
         console.log(
-          `  ${pc.bold(labelB?.padEnd(28) ?? "List B")}: ${pc.yellow(stats.countB.toLocaleString().padStart(8))} contacts ${pc.dim(`(${filePaths[1]})`)}`,
+          `  ${pc.bold(labelB?.padEnd(28) ?? "Target B")}: ${pc.yellow(stats.countB.toLocaleString().padStart(8))} contacts`,
         );
         console.log("-".repeat(65));
         console.log(
@@ -1561,7 +1622,7 @@ program
       filePaths.forEach((f, idx) => {
         const contacts = readContactsFromFile(f);
         console.log(
-          `  ${pc.bold((labels[idx] ?? "").padEnd(28))}: ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts ${pc.dim(`(${f})`)}`,
+          `  ${pc.bold((labels[idx] ?? "").padEnd(28))}: ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts`,
         );
       });
       console.log("-".repeat(65));
@@ -1590,8 +1651,8 @@ program
   .description(
     "Patch/import contacts from external text/vCard (.vcf) file(s) into global lists (--main, --lock) or a room/list target",
   )
-  .option("--main", `Patch into global main list (${getMainListPath()})`)
-  .option("--lock", `Patch into global lock list (${getLockListPath()})`)
+  .option("--main", "Patch into global main list")
+  .option("--lock", "Patch into global lock list")
   .action(
     (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
       try {
@@ -1609,12 +1670,12 @@ program
         }
 
         if (opts.main) {
-          targetLabel = "Global Main List (main.txt)";
-          targetListPath = getMainListPath();
+          targetLabel = "Global Main List";
+          targetListPath = "main";
           fileArgs = args;
         } else if (opts.lock) {
-          targetLabel = "Global Lock List (lock.txt)";
-          targetListPath = getLockListPath();
+          targetLabel = "Global Lock List";
+          targetListPath = "lock";
           fileArgs = args;
         } else {
           if (args.length < 2) {
@@ -1685,7 +1746,7 @@ program
         console.log(pc.bold(pc.green(`        PATCH REPORT: ${targetLabel}`)));
         console.log("=".repeat(58));
         console.log(
-          `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+          `${pc.bold("Target List:")}             ${pc.cyan(targetListPath)}`,
         );
         console.log(
           `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
@@ -1719,8 +1780,8 @@ program
   .description(
     "Unpatch/remove contacts present in external text/vCard (.vcf) file(s) from global lists (--main, --lock) or a room/list target",
   )
-  .option("--main", `Unpatch from global main list (${getMainListPath()})`)
-  .option("--lock", `Unpatch from global lock list (${getLockListPath()})`)
+  .option("--main", "Unpatch from global main list")
+  .option("--lock", "Unpatch from global lock list")
   .action(
     (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
       try {
@@ -1738,12 +1799,12 @@ program
         }
 
         if (opts.main) {
-          targetLabel = "Global Main List (main.txt)";
-          targetListPath = getMainListPath();
+          targetLabel = "Global Main List";
+          targetListPath = "main";
           fileArgs = args;
         } else if (opts.lock) {
-          targetLabel = "Global Lock List (lock.txt)";
-          targetListPath = getLockListPath();
+          targetLabel = "Global Lock List";
+          targetListPath = "lock";
           fileArgs = args;
         } else {
           if (args.length < 2) {
@@ -1816,7 +1877,7 @@ program
         );
         console.log("=".repeat(58));
         console.log(
-          `${pc.bold("Target List File:")}        ${pc.cyan(targetListPath)}`,
+          `${pc.bold("Target List:")}             ${pc.cyan(targetListPath)}`,
         );
         console.log(
           `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
@@ -2059,21 +2120,115 @@ program
 program
   .command("lists")
   .description(
-    `List all known contact files in ${getWapeListsDir()}/ and their current contact counts`,
+    "List all configured contact lists and their current contact counts",
   )
   .action(() => {
     const knownLists = getAllKnownLists();
-    console.log(
-      pc.cyan(`\n📁 wape Contact Lists Repository (${getWapeListsDir()}/)\n`),
-    );
-    console.log("=".repeat(65));
+    console.log(pc.cyan(`\n📁 wape Contact Lists\n`));
+    console.log("=".repeat(50));
     knownLists.forEach((l) => {
-      const contacts = readContactsFromFile(l.path);
+      const contacts = getContactsFromList(l.name);
       console.log(
-        `  ${pc.bold(l.name.padEnd(25))} ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts ${pc.dim(`(${l.path})`)}`,
+        `  ${pc.bold(l.name.padEnd(25))} ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts`,
       );
     });
-    console.log("=".repeat(65) + "\n");
+    console.log("=".repeat(50) + "\n");
+  });
+
+/**
+ * Contact Source / Provenance Command
+ */
+const sourceCmd = program
+  .command("source [number]")
+  .description(
+    "Display all groups, communities, backup sources, and lists a contact has been identified in",
+  )
+  .action((number?: string) => {
+    if (!number || !number.trim()) {
+      console.log(sourceCmd.helpInformation());
+      return;
+    }
+
+    const normalized = normalizeNigerianPhoneNumber(number.trim());
+    if (!normalized) {
+      console.error(
+        pc.red(`\n❌ Error: Invalid Nigerian phone number: '${number}'\n`),
+      );
+      process.exit(1);
+    }
+
+    const provenance = getContactProvenance(normalized);
+    if (
+      !provenance ||
+      (provenance.groups.length === 0 &&
+        provenance.rooms.length === 0 &&
+        provenance.lists.length === 0)
+    ) {
+      console.log(
+        pc.yellow(
+          `\nNo provenance records found for contact: ${formatPhoneNumber(normalized)} (${normalized})\n`,
+        ),
+      );
+      return;
+    }
+
+    console.log(pc.cyan("\n" + "=".repeat(66)));
+    console.log(
+      pc.bold(
+        pc.cyan(
+          `📱 CONTACT SOURCE REPORT: ${formatPhoneNumber(normalized)} (${normalized})`,
+        ),
+      ),
+    );
+    console.log("=".repeat(66));
+    console.log(
+      `${pc.bold("Total Groups Identified In:")} ${pc.magenta(provenance.totalGroupsCount.toString())}`,
+    );
+
+    if (provenance.groups.length > 0) {
+      console.log(pc.bold(pc.underline("\nIDENTIFIED GROUPS:")));
+      provenance.groups.forEach((g, gIdx) => {
+        const comm = g.communityName
+          ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} └─ `
+          : `${pc.dim("[Standalone]")} • `;
+
+        const oneoffSources = g.sources.filter(
+          (s) => s.sourceType === "oneoff",
+        );
+        let extraInfo = "";
+        if (oneoffSources.length > 0) {
+          const labels = oneoffSources
+            .map((s) =>
+              s.ownerPhone
+                ? `${s.sourceLabel} • Owner: ${formatPhoneNumber(s.ownerPhone)}`
+                : s.sourceLabel,
+            )
+            .join(", ");
+          extraInfo = ` ${pc.magenta(`(One-off: ${labels})`)}`;
+        }
+
+        console.log(
+          `  ${pc.bold(`${gIdx + 1}.`)} ${comm}${g.subject}${extraInfo}`,
+        );
+      });
+    }
+
+    console.log(pc.bold(pc.underline("\nROOMS:")));
+    if (provenance.rooms.length > 0) {
+      provenance.rooms.forEach((r) => {
+        console.log(`  • ${pc.green(r)}`);
+      });
+    } else {
+      console.log(pc.dim("  (None)"));
+    }
+
+    if (provenance.lists.length > 0) {
+      console.log(pc.bold(pc.underline("\nPRESENT IN LISTS:")));
+      provenance.lists.forEach((l) => {
+        console.log(`  • ${pc.green(l)}`);
+      });
+    }
+    console.log("\n" + "=".repeat(66) + "\n");
   });
 
 /**
@@ -2084,17 +2239,36 @@ const configCmd = program
   .description(`View or update ${getWapeConfigFile()} settings`);
 
 configCmd
-  .command("get")
+  .command("get [setting]")
   .description(`View current ${getWapeConfigFile()} configuration`)
-  .action(() => {
+  .action((setting?: string) => {
     const cfg = getAppConfig();
+    if (setting) {
+      const cleanKey = setting.trim().toLowerCase();
+      if (cleanKey === "key") {
+        console.log(cfg.key ?? "(not set)");
+      } else if (cleanKey === "backup" || cleanKey === "backuppath") {
+        console.log(cfg.backupPath ?? "(not set)");
+      } else if (
+        cleanKey === "default-compare" ||
+        cleanKey === "defaultcomparerooms"
+      ) {
+        console.log(cfg.defaultCompareRooms?.join(", ") ?? "(not set)");
+      } else {
+        console.log(pc.yellow(`Unknown setting '${setting}'.`));
+      }
+      return;
+    }
     console.log(pc.cyan(`\n⚙️  wape Configuration (${getWapeConfigFile()})\n`));
     console.log("=".repeat(65));
     console.log(
-      `${pc.bold("Key:")}         ${cfg.key ? pc.yellow(cfg.key.slice(0, 12) + "..." + cfg.key.slice(-6)) : pc.dim("(not set)")}`,
+      `${pc.bold("Key:")}                   ${cfg.key ? pc.yellow(cfg.key.slice(0, 12) + "..." + cfg.key.slice(-6)) : pc.dim("(not set)")}`,
     );
     console.log(
-      `${pc.bold("Backup Path:")} ${cfg.backupPath ? pc.green(cfg.backupPath) : pc.dim("(auto-discovery)")}`,
+      `${pc.bold("Backup Path:")}           ${cfg.backupPath ? pc.green(cfg.backupPath) : pc.dim("(auto-discovery)")}`,
+    );
+    console.log(
+      `${pc.bold("Default Compare Rooms:")} ${cfg.defaultCompareRooms && cfg.defaultCompareRooms.length > 0 ? pc.cyan(cfg.defaultCompareRooms.join(", ")) : pc.dim("(not set)")}`,
     );
     console.log("=".repeat(65) + "\n");
   });
@@ -2104,21 +2278,60 @@ configCmd
   .description("Set configuration values")
   .option("-k, --key <key>", "Decryption key (64 hex characters or base64)")
   .option("-b, --backup <path>", "Path to WhatsApp backup file")
-  .action((opts: { key?: string; backup?: string }) => {
-    if (!opts.key && !opts.backup) {
+  .option(
+    "-d, --default-compare <rooms...>",
+    "Default rooms to use for compare and bundle operations (e.g. -d room1 room2)",
+  )
+  .option(
+    "--clear-default-compare",
+    "Clear configured default rooms for compare and bundle operations",
+  )
+  .action(
+    (opts: {
+      key?: string;
+      backup?: string;
+      defaultCompare?: string[];
+      clearDefaultCompare?: boolean;
+    }) => {
+      if (
+        !opts.key &&
+        !opts.backup &&
+        !opts.defaultCompare &&
+        !opts.clearDefaultCompare
+      ) {
+        console.log(
+          pc.yellow(
+            "Please provide --key <key>, --backup <path>, --default-compare <rooms...>, or --clear-default-compare to update config.",
+          ),
+        );
+        return;
+      }
+      const update: AppConfig & { clearDefaultCompare?: boolean } = {};
+      if (opts.key) update.key = opts.key.trim();
+      if (opts.backup) update.backupPath = opts.backup.trim();
+      if (opts.clearDefaultCompare) {
+        update.clearDefaultCompare = true;
+      }
+      if (opts.defaultCompare) {
+        if (opts.defaultCompare.length < 2) {
+          console.error(
+            pc.red(
+              "\n❌ Error: Please provide at least two rooms for default-compare (e.g. --default-compare room1 room2)\n",
+            ),
+          );
+          process.exit(1);
+        }
+        update.defaultCompareRooms = [
+          opts.defaultCompare[0]!.trim().toLowerCase(),
+          opts.defaultCompare[1]!.trim().toLowerCase(),
+        ];
+      }
+      saveAppConfig(update);
       console.log(
-        pc.yellow("Please provide --key <key> or --backup <path> to set."),
+        pc.green(`\n✅ Configuration updated in ${getWapeConfigFile()}\n`),
       );
-      return;
-    }
-    const update: { key?: string; backupPath?: string } = {};
-    if (opts.key) update.key = opts.key.trim();
-    if (opts.backup) update.backupPath = opts.backup.trim();
-    saveAppConfig(update);
-    console.log(
-      pc.green(`\n✅ Configuration updated in ${getWapeConfigFile()}\n`),
-    );
-  });
+    },
+  );
 
 configCmd.action(() => {
   configCmd.outputHelp();

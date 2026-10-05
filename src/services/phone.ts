@@ -1,5 +1,5 @@
 /**
- * Utilities for parsing, validating, normalizing, and formatting Nigerian phone numbers.
+ * Utilities for parsing, validating, normalizing, and formatting Nigerian and Owner phone numbers.
  */
 
 /**
@@ -38,7 +38,24 @@ export function normalizeNigerianPhoneNumber(raw: string): string | null {
 }
 
 /**
+ * Normalizes an account owner's phone number.
+ * Supports Nigerian numbers as well as international E.164 numbers (+XXXXXXXX...).
+ */
+export function normalizeOwnerPhoneNumber(raw: string): string | null {
+  if (!raw) return null;
+  const nigerian = normalizeNigerianPhoneNumber(raw);
+  if (nigerian) return nigerian;
+
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= 7 && digits.length <= 15) {
+    return `+${digits}`;
+  }
+  return null;
+}
+
+/**
  * Formats a Nigerian phone number into "XXXX XXX XXXX" format (e.g. "0801 234 5678").
+ * If the number is an international E.164 number, returns formatted E.164.
  */
 export function formatPhoneNumber(phoneNumber: string): string {
   const normalized = normalizeNigerianPhoneNumber(phoneNumber);

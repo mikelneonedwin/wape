@@ -8,7 +8,10 @@ import {
   messages,
   messageSystemWithGroupNodes,
 } from "../db/schema";
-import { normalizeNigerianPhoneNumber } from "./phone";
+import {
+  normalizeNigerianPhoneNumber,
+  normalizeOwnerPhoneNumber,
+} from "./phone";
 import { saveRoom, type Room } from "./wape-store";
 
 export interface GroupSummary {
@@ -425,28 +428,103 @@ export function resolveRoomGroups(
   };
 }
 
-export async function extractNigerianNumbersFromGroups(
+export async function detectWhatsAppOwnerPhone(
+  db: AppDatabase,
+): Promise<string | null> {
+  // 1. WhatsApp JID type 11 (JID_TYPE_USER_SELF)
+  try {
+    const selfJidRows = await db
+      .select({
+        user: jids.user,
+        server: jids.server,
+      })
+      .from(jids)
+      .where(sql`${jids.type} = 11 AND ${jids.server} = 's.whatsapp.net'`)
+      .limit(1);
+
+    if (selfJidRows.length > 0 && selfJidRows[0]?.user) {
+      const normalized = normalizeOwnerPhoneNumber(selfJidRows[0].user);
+      if (normalized) return normalized;
+    }
+  } catch {
+    // Graceful fallback if type column doesn't exist
+  }
+
+  // 2. Props table fallback (registration_jid / my_jid)
+  try {
+    const row = db.$client
+      .query<{ value: string }, []>(
+        `SELECT value FROM props WHERE key IN ('my_jid', 'registration_jid') LIMIT 1`,
+      )
+      .get();
+    if (row?.value) {
+      const val = String(row.value);
+      const userPart = val.split("@")[0] || val;
+      const normalized = normalizeOwnerPhoneNumber(userPart);
+      if (normalized) return normalized;
+    }
+  } catch {
+    // Props table might not exist
+  }
+
+  // 3. Settings table fallback (backup_user_jid)
+  try {
+    const row = db.$client
+      .query<{ value: string }, []>(
+        `SELECT value FROM settings WHERE key = 'backup_user_jid' LIMIT 1`,
+      )
+      .get();
+    if (row?.value) {
+      const val = String(row.value);
+      const userPart = val.split("@")[0] || val;
+      const normalized = normalizeOwnerPhoneNumber(userPart);
+      if (normalized) return normalized;
+    }
+  } catch {
+    // Settings table might not exist
+  }
+
+  return null;
+}
+
+export interface GroupProvenanceExtraction {
+  uniqueNigerianNumbers: Set<string>;
+  groupPhonesMap: Map<number, Set<string>>;
+}
+
+export async function extractNigerianNumbersWithGroupMapping(
   db: AppDatabase,
   groupJidRowIds: number[],
-): Promise<Set<string>> {
+): Promise<GroupProvenanceExtraction> {
   if (groupJidRowIds.length === 0) {
-    return new Set<string>();
+    return {
+      uniqueNigerianNumbers: new Set<string>(),
+      groupPhonesMap: new Map<number, Set<string>>(),
+    };
   }
 
   const uniqueNigerianNumbers = new Set<string>();
+  const groupPhonesMap = new Map<number, Set<string>>();
 
-  const processParticipant = (participant: {
-    userJid?: {
-      server: string;
-      user: string;
-      lidToPhoneMap?: {
-        phoneJid?: {
-          server: string;
-          user: string;
+  for (const id of groupJidRowIds) {
+    groupPhonesMap.set(id, new Set<string>());
+  }
+
+  const processParticipant = (
+    groupJidRowId: number,
+    participant: {
+      userJid?: {
+        server: string;
+        user: string;
+        lidToPhoneMap?: {
+          phoneJid?: {
+            server: string;
+            user: string;
+          } | null;
         } | null;
       } | null;
-    } | null;
-  }) => {
+    },
+  ) => {
     const userJid = participant.userJid;
     if (!userJid) return;
 
@@ -465,6 +543,12 @@ export async function extractNigerianNumbersFromGroups(
       const normalized = normalizeNigerianPhoneNumber(candidateNumber);
       if (normalized) {
         uniqueNigerianNumbers.add(normalized);
+        let gSet = groupPhonesMap.get(groupJidRowId);
+        if (!gSet) {
+          gSet = new Set<string>();
+          groupPhonesMap.set(groupJidRowId, gSet);
+        }
+        gSet.add(normalized);
       }
     }
   };
@@ -485,7 +569,7 @@ export async function extractNigerianNumbersFromGroups(
   });
 
   for (const participant of currentParticipants) {
-    processParticipant(participant);
+    processParticipant(participant.groupJidRowId, participant);
   }
 
   try {
@@ -505,13 +589,24 @@ export async function extractNigerianNumbersFromGroups(
     });
 
     for (const participant of pastParticipants) {
-      processParticipant(participant);
+      processParticipant(participant.groupJidRowId, participant);
     }
   } catch {
     // Graceful fallback if group_past_participant_user table is not present in older databases
   }
 
-  return uniqueNigerianNumbers;
+  return { uniqueNigerianNumbers, groupPhonesMap };
+}
+
+export async function extractNigerianNumbersFromGroups(
+  db: AppDatabase,
+  groupJidRowIds: number[],
+): Promise<Set<string>> {
+  const result = await extractNigerianNumbersWithGroupMapping(
+    db,
+    groupJidRowIds,
+  );
+  return result.uniqueNigerianNumbers;
 }
 
 /**
