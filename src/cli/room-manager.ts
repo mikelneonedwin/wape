@@ -2,7 +2,7 @@ import { select } from "@inquirer/prompts";
 import pc from "picocolors";
 import { resolveRoomGroups, type GroupSummary } from "../services/extractor";
 import {
-  getContactsFromList,
+  getListContactCount,
   getIgnoredJidSet,
   getRoomById,
   getRooms,
@@ -42,8 +42,8 @@ export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {
 
   rooms.forEach((r, idx) => {
     const listName = r.targetList ? normalizeListName(r.targetList) : r.id;
-    const contacts = getContactsFromList(listName);
-    const listInfo = `${pc.green(listName)} ${pc.yellow(`(${contacts.size.toLocaleString()} contacts)`)}`;
+    const count = getListContactCount(listName);
+    const listInfo = `${pc.green(listName)} ${pc.yellow(`(${count.toLocaleString()} contacts)`)}`;
 
     const resolved = resolveRoomGroups(r, groups);
     const totalCount = resolved.resolvedItems.length;
@@ -79,10 +79,10 @@ export function printRoomDetail(room: Room, groups?: GroupSummary[]): void {
   const listName = room.targetList
     ? normalizeListName(room.targetList)
     : room.id;
-  const contacts = getContactsFromList(listName);
+  const count = getListContactCount(listName);
   console.log(`${pc.bold("Target List:")}       ${pc.green(listName)}`);
   console.log(
-    `${pc.bold("Contacts in List:")}  ${pc.magenta(contacts.size.toLocaleString() + " contacts")}`,
+    `${pc.bold("Contacts in List:")}  ${pc.magenta(count.toLocaleString() + " contacts")}`,
   );
 
   const resolved = resolveRoomGroups(room, groups);

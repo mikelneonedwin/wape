@@ -270,6 +270,7 @@ function initWapeDbSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);
     CREATE INDEX IF NOT EXISTS idx_groups_jid ON groups(jid);
     CREATE INDEX IF NOT EXISTS idx_room_groups_room ON room_groups(room_id);
+    CREATE INDEX IF NOT EXISTS idx_cgs_group ON contact_group_sources(group_id);
   `);
 
   // Ensure default global lists exist
@@ -676,23 +677,19 @@ export function saveContactsToList(
   const now = Date.now();
 
   db.transaction(() => {
+    const insertContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
+    );
+    const insertListContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO list_contacts (list_id, contact_id) SELECT ?, id FROM contacts WHERE phone = ?`,
+    );
+
     db.run(`DELETE FROM list_contacts WHERE list_id = ?`, [list.id]);
     for (const phone of contacts) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        db.run(
-          `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
-          [normalized, now],
-        );
-        const contactRow = db
-          .query(`SELECT id FROM contacts WHERE phone = ?`)
-          .get(normalized) as { id: number } | null;
-        if (contactRow) {
-          db.run(
-            `INSERT OR IGNORE INTO list_contacts (list_id, contact_id) VALUES (?, ?)`,
-            [list.id, contactRow.id],
-          );
-        }
+        insertContactStmt.run(normalized, now);
+        insertListContactStmt.run(list.id, normalized);
       }
     }
     db.run(`UPDATE lists SET updated_at = ? WHERE id = ?`, [now, list.id]);
@@ -709,24 +706,20 @@ export function addContactsToList(
   let addedCount = 0;
 
   db.transaction(() => {
+    const insertContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
+    );
+    const insertListContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO list_contacts (list_id, contact_id) SELECT ?, id FROM contacts WHERE phone = ?`,
+    );
+
     for (const phone of newContacts) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        db.run(
-          `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
-          [normalized, now],
-        );
-        const contactRow = db
-          .query(`SELECT id FROM contacts WHERE phone = ?`)
-          .get(normalized) as { id: number } | null;
-        if (contactRow) {
-          const res = db.run(
-            `INSERT OR IGNORE INTO list_contacts (list_id, contact_id) VALUES (?, ?)`,
-            [list.id, contactRow.id],
-          );
-          if (res.changes > 0) {
-            addedCount++;
-          }
+        insertContactStmt.run(normalized, now);
+        const res = insertListContactStmt.run(list.id, normalized);
+        if (res.changes > 0) {
+          addedCount++;
         }
       }
     }
@@ -766,20 +759,15 @@ export function removeContactsFromList(
   const now = Date.now();
 
   db.transaction(() => {
+    const deleteStmt = db.prepare(
+      `DELETE FROM list_contacts WHERE list_id = ? AND contact_id = (SELECT id FROM contacts WHERE phone = ?)`,
+    );
     for (const phone of contactsToRemove) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        const contactRow = db
-          .query(`SELECT id FROM contacts WHERE phone = ?`)
-          .get(normalized) as { id: number } | null;
-        if (contactRow) {
-          const res = db.run(
-            `DELETE FROM list_contacts WHERE list_id = ? AND contact_id = ?`,
-            [listRow.id, contactRow.id],
-          );
-          if (res.changes > 0) {
-            removedCount++;
-          }
+        const res = deleteStmt.run(listRow.id, normalized);
+        if (res.changes > 0) {
+          removedCount++;
         }
       }
     }
@@ -819,20 +807,38 @@ export function recordScanProvenance(options: {
   let sourceId = 0;
 
   db.transaction(() => {
+    const insertSourceStmt = db.prepare(
+      `INSERT INTO sources (type, label, owner_phone, scanned_at) VALUES (?, ?, ?, ?)`,
+    );
+    const updateSourceStmt = db.prepare(
+      `UPDATE sources SET scanned_at = ?, owner_phone = COALESCE(?, owner_phone) WHERE id = ?`,
+    );
+    const insertGroupStmt = db.prepare(
+      `INSERT INTO groups (source_id, jid, subject, community_name) VALUES (?, ?, ?, ?) ON CONFLICT(source_id, jid) DO UPDATE SET subject = excluded.subject, community_name = excluded.community_name`,
+    );
+    const getGroupStmt = db.prepare(
+      `SELECT id FROM groups WHERE source_id = ? AND jid = ?`,
+    );
+    const insertContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
+    );
+    const insertContactGroupStmt = db.prepare(
+      `INSERT OR IGNORE INTO contact_group_sources (contact_id, group_id) SELECT id, ? FROM contacts WHERE phone = ?`,
+    );
+
     const existingSource = db
       .query(`SELECT id FROM sources WHERE type = ? AND label = ?`)
       .get(options.type, options.label) as { id: number } | null;
 
     if (existingSource) {
       sourceId = existingSource.id;
-      db.run(
-        `UPDATE sources SET scanned_at = ?, owner_phone = COALESCE(?, owner_phone) WHERE id = ?`,
-        [now, options.ownerPhone ?? null, sourceId],
-      );
+      updateSourceStmt.run(now, options.ownerPhone ?? null, sourceId);
     } else {
-      db.run(
-        `INSERT INTO sources (type, label, owner_phone, scanned_at) VALUES (?, ?, ?, ?)`,
-        [options.type, options.label, options.ownerPhone ?? null, now],
+      insertSourceStmt.run(
+        options.type,
+        options.label,
+        options.ownerPhone ?? null,
+        now,
       );
       const sourceRow = db.query(`SELECT last_insert_rowid() as id`).get() as {
         id: number;
@@ -841,29 +847,19 @@ export function recordScanProvenance(options: {
     }
 
     for (const group of options.groups) {
-      db.run(
-        `INSERT INTO groups (source_id, jid, subject, community_name) VALUES (?, ?, ?, ?)
-         ON CONFLICT(source_id, jid) DO UPDATE SET subject = excluded.subject, community_name = excluded.community_name`,
-        [sourceId, group.jid, group.subject, group.communityName ?? null],
+      insertGroupStmt.run(
+        sourceId,
+        group.jid,
+        group.subject,
+        group.communityName ?? null,
       );
-      const groupRow = db
-        .query(`SELECT id FROM groups WHERE source_id = ? AND jid = ?`)
-        .get(sourceId, group.jid) as { id: number };
+      const groupRow = getGroupStmt.get(sourceId, group.jid) as { id: number };
 
       for (const rawPhone of group.phones) {
         const normalized = normalizeNigerianPhoneNumber(rawPhone);
         if (normalized) {
-          db.run(
-            `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
-            [normalized, now],
-          );
-          const contactRow = db
-            .query(`SELECT id FROM contacts WHERE phone = ?`)
-            .get(normalized) as { id: number };
-          db.run(
-            `INSERT OR IGNORE INTO contact_group_sources (contact_id, group_id) VALUES (?, ?)`,
-            [contactRow.id, groupRow.id],
-          );
+          insertContactStmt.run(normalized, now);
+          insertContactGroupStmt.run(groupRow.id, normalized);
         }
       }
     }
@@ -1410,6 +1406,13 @@ export function saveNotedComparison(
   const now = Date.now();
 
   db.transaction(() => {
+    const insertContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
+    );
+    const insertNotedContactStmt = db.prepare(
+      `INSERT OR IGNORE INTO noted_comparison_contacts (targets_key, contact_id) SELECT ?, id FROM contacts WHERE phone = ?`,
+    );
+
     db.run(
       `INSERT OR REPLACE INTO noted_comparisons (targets_key, noted_at) VALUES (?, ?)`,
       [key, now],
@@ -1421,17 +1424,8 @@ export function saveNotedComparison(
     for (const phone of contacts) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        db.run(
-          `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
-          [normalized, now],
-        );
-        const contactRow = db
-          .query(`SELECT id FROM contacts WHERE phone = ?`)
-          .get(normalized) as { id: number };
-        db.run(
-          `INSERT OR IGNORE INTO noted_comparison_contacts (targets_key, contact_id) VALUES (?, ?)`,
-          [key, contactRow.id],
-        );
+        insertContactStmt.run(normalized, now);
+        insertNotedContactStmt.run(key, normalized);
       }
     }
   })();
@@ -1478,4 +1472,18 @@ export function resolveListFilePath(listNameOrPath: string): string {
   }
   const filename = cleanName.endsWith(".txt") ? cleanName : `${cleanName}.txt`;
   return join(getWapeListsDir(), filename);
+}
+
+export function getListContactCount(listName: string): number {
+  const db = getWapeDb();
+  const clean = normalizeListName(listName);
+  const listRow = db
+    .query(`SELECT id FROM lists WHERE name = ?`)
+    .get(clean) as { id: number } | null;
+  if (!listRow) return 0;
+
+  const totalRow = db
+    .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+    .get(listRow.id) as { cnt: number };
+  return totalRow.cnt;
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { input, select } from "@inquirer/prompts";
@@ -48,7 +49,6 @@ import {
   getAllKnownLists,
   getAppConfig,
   getContactProvenance,
-  getContactsFromList,
   getIgnoredJidSet,
   getRoomById,
   getRooms,
@@ -178,9 +178,8 @@ async function executeGroupExport(
       ...knownLists
         .filter((l) => !l.isGlobal)
         .map((l) => {
-          const contacts = getContactsFromList(l.name);
           return {
-            name: `${pc.bold(l.name)} ${pc.yellow(`(${contacts.size.toLocaleString()} contacts)`)}`,
+            name: `${pc.bold(l.name)} ${pc.yellow(`(${l.count.toLocaleString()} contacts)`)}`,
             value: l.name,
             description: `List: ${l.name}`,
           };
@@ -312,7 +311,9 @@ async function scanSingleRoom(
     forcedTargetList: forcedList,
     roomContext: room,
     scanType: opts?.scanType ?? "primary",
-    sourceLabel: opts?.sourceLabel ?? `Room: ${room.id}`,
+    sourceLabel:
+      opts?.sourceLabel ??
+      (opts?.scanType === "oneoff" ? "One-off Backup" : "Primary Backup"),
     ownerPhone: opts?.ownerPhone ?? null,
     allGroups: groups,
   });
@@ -692,13 +693,9 @@ const roomCmd = program
 roomCmd
   .command("list", { isDefault: false })
   .description("List all configured rooms")
-  .action(async () => {
-    try {
-      const { groups } = await loadDbAndGroups();
-      printRoomsTable(getRooms(), groups);
-    } catch {
-      printRoomsTable(getRooms());
-    }
+  .action(() => {
+    printRoomsTable(getRooms());
+    process.exit(0);
   });
 
 roomCmd
@@ -745,8 +742,7 @@ roomCmd
 
       if (!room) return;
 
-      const { groups } = await loadDbAndGroups();
-      printRoomDetail(room, groups);
+      printRoomDetail(room, undefined);
     } catch (error) {
       console.error(
         pc.red(
@@ -799,15 +795,7 @@ roomCmd
 
       if (!room) return;
 
-      let groups: GroupSummary[] | undefined;
-      try {
-        const res = await loadDbAndGroups();
-        groups = res.groups;
-      } catch {
-        // Backup / db might not be configured, will fall back to stored group names in room
-      }
-
-      printRoomGroups(room, groups);
+      printRoomGroups(room, undefined);
     } catch (error) {
       console.error(
         pc.red(
@@ -1237,6 +1225,7 @@ async function executeBundle(
     }
     console.log(pc.dim(`\n📋 Copied ${parts.join(" and ")} to clipboard.\n`));
   }
+  process.exit(0);
 }
 
 roomCmd
@@ -2127,9 +2116,8 @@ program
     console.log(pc.cyan(`\n📁 wape Contact Lists\n`));
     console.log("=".repeat(50));
     knownLists.forEach((l) => {
-      const contacts = getContactsFromList(l.name);
       console.log(
-        `  ${pc.bold(l.name.padEnd(25))} ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts`,
+        `  ${pc.bold(l.name.padEnd(25))} ${pc.yellow(l.count.toLocaleString().padStart(8))} contacts`,
       );
     });
     console.log("=".repeat(50) + "\n");
@@ -2339,6 +2327,13 @@ configCmd.action(() => {
 
 if (process.argv.length <= 2) {
   program.outputHelp();
+  process.exit(0);
 } else {
-  program.parse(process.argv);
+  program
+    .parseAsync(process.argv)
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
 }

@@ -1,9 +1,8 @@
-import { inArray, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { AppDatabase } from "../db";
 import {
   chats,
   groupParticipantUsers,
-  groupPastParticipantUsers,
   jids,
   messages,
   messageSystemWithGroupNodes,
@@ -510,89 +509,119 @@ export async function extractNigerianNumbersWithGroupMapping(
     groupPhonesMap.set(id, new Set<string>());
   }
 
-  const processParticipant = (
-    groupJidRowId: number,
-    participant: {
-      userJid?: {
-        server: string;
-        user: string;
-        lidToPhoneMap?: {
-          phoneJid?: {
-            server: string;
-            user: string;
-          } | null;
-        } | null;
-      } | null;
-    },
-  ) => {
-    const userJid = participant.userJid;
-    if (!userJid) return;
+  const sqliteDb = db.$client;
 
-    let candidateNumber: string | null = null;
+  if (groupJidRowIds.length > 0) {
+    const placeholders = groupJidRowIds.map(() => "?").join(",");
+    const query = `
+      SELECT 
+        gpu.group_jid_row_id as groupJidRowId,
+        j.user as user,
+        j.server as server,
+        pj.user as phoneUser,
+        pj.server as phoneServer
+      FROM group_participant_user gpu
+      LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
+      LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
+      LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+      WHERE gpu.group_jid_row_id IN (${placeholders})
 
-    if (userJid.server === "s.whatsapp.net" && userJid.user) {
-      candidateNumber = userJid.user;
-    } else if (
-      userJid.lidToPhoneMap?.phoneJid?.server === "s.whatsapp.net" &&
-      userJid.lidToPhoneMap.phoneJid.user
-    ) {
-      candidateNumber = userJid.lidToPhoneMap.phoneJid.user;
-    }
+      UNION ALL
 
-    if (candidateNumber) {
-      const normalized = normalizeNigerianPhoneNumber(candidateNumber);
-      if (normalized) {
-        uniqueNigerianNumbers.add(normalized);
-        let gSet = groupPhonesMap.get(groupJidRowId);
-        if (!gSet) {
-          gSet = new Set<string>();
-          groupPhonesMap.set(groupJidRowId, gSet);
+      SELECT 
+        gpu.group_jid_row_id as groupJidRowId,
+        j.user as user,
+        j.server as server,
+        pj.user as phoneUser,
+        pj.server as phoneServer
+      FROM group_past_participant_user gpu
+      LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
+      LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
+      LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+      WHERE gpu.group_jid_row_id IN (${placeholders})
+    `;
+
+    try {
+      const rows = sqliteDb
+        .query(query)
+        .all(...groupJidRowIds, ...groupJidRowIds) as {
+        groupJidRowId: number;
+        user: string | null;
+        server: string | null;
+        phoneUser: string | null;
+        phoneServer: string | null;
+      }[];
+
+      for (const row of rows) {
+        let candidateNumber: string | null = null;
+        if (row.server === "s.whatsapp.net" && row.user) {
+          candidateNumber = row.user;
+        } else if (row.phoneServer === "s.whatsapp.net" && row.phoneUser) {
+          candidateNumber = row.phoneUser;
         }
-        gSet.add(normalized);
+
+        if (candidateNumber) {
+          const normalized = normalizeNigerianPhoneNumber(candidateNumber);
+          if (normalized) {
+            uniqueNigerianNumbers.add(normalized);
+            let gSet = groupPhonesMap.get(row.groupJidRowId);
+            if (!gSet) {
+              gSet = new Set<string>();
+              groupPhonesMap.set(row.groupJidRowId, gSet);
+            }
+            gSet.add(normalized);
+          }
+        }
+      }
+    } catch {
+      // Graceful fallback if group_past_participant_user or other tables are not fully present in older databases
+      // We will run the query without the UNION ALL
+      const fallbackQuery = `
+        SELECT 
+          gpu.group_jid_row_id as groupJidRowId,
+          j.user as user,
+          j.server as server,
+          pj.user as phoneUser,
+          pj.server as phoneServer
+        FROM group_participant_user gpu
+        LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
+        LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
+        LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+        WHERE gpu.group_jid_row_id IN (${placeholders})
+      `;
+      try {
+        const rows = sqliteDb.query(fallbackQuery).all(...groupJidRowIds) as {
+          groupJidRowId: number;
+          user: string | null;
+          server: string | null;
+          phoneUser: string | null;
+          phoneServer: string | null;
+        }[];
+        for (const row of rows) {
+          let candidateNumber: string | null = null;
+          if (row.server === "s.whatsapp.net" && row.user) {
+            candidateNumber = row.user;
+          } else if (row.phoneServer === "s.whatsapp.net" && row.phoneUser) {
+            candidateNumber = row.phoneUser;
+          }
+
+          if (candidateNumber) {
+            const normalized = normalizeNigerianPhoneNumber(candidateNumber);
+            if (normalized) {
+              uniqueNigerianNumbers.add(normalized);
+              let gSet = groupPhonesMap.get(row.groupJidRowId);
+              if (!gSet) {
+                gSet = new Set<string>();
+                groupPhonesMap.set(row.groupJidRowId, gSet);
+              }
+              gSet.add(normalized);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Extraction fallback query failed:", err);
       }
     }
-  };
-
-  const currentParticipants = await db.query.groupParticipantUsers.findMany({
-    where: inArray(groupParticipantUsers.groupJidRowId, groupJidRowIds),
-    with: {
-      userJid: {
-        with: {
-          lidToPhoneMap: {
-            with: {
-              phoneJid: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  for (const participant of currentParticipants) {
-    processParticipant(participant.groupJidRowId, participant);
-  }
-
-  try {
-    const pastParticipants = await db.query.groupPastParticipantUsers.findMany({
-      where: inArray(groupPastParticipantUsers.groupJidRowId, groupJidRowIds),
-      with: {
-        userJid: {
-          with: {
-            lidToPhoneMap: {
-              with: {
-                phoneJid: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    for (const participant of pastParticipants) {
-      processParticipant(participant.groupJidRowId, participant);
-    }
-  } catch {
-    // Graceful fallback if group_past_participant_user table is not present in older databases
   }
 
   return { uniqueNigerianNumbers, groupPhonesMap };
@@ -627,12 +656,11 @@ export function normalizeWhatsAppGroupLink(raw: string): string | null {
 export async function extractWhatsAppGroupLinks(
   db: AppDatabase,
 ): Promise<string[]> {
-  const messageRows = await db.query.messages.findMany({
-    where: sql`${messages.textData} LIKE '%chat.whatsapp.com%'`,
-    columns: {
-      textData: true,
-    },
-  });
+  const messageRows = db.$client
+    .query(
+      `SELECT text_data as textData FROM message WHERE text_data LIKE '%chat.whatsapp.com%'`,
+    )
+    .all() as { textData: string | null }[];
 
   const uniqueLinks = new Set<string>();
   const linkRegex = /(?:https?:\/\/)?chat\.whatsapp\.com\/([a-zA-Z0-9_-]+)/gi;
