@@ -1123,4 +1123,101 @@ describe("Group and Community Extractor", () => {
     const read2 = readContactsFromFile(samplePath);
     expect(read2.size).toBe(4);
   });
+
+  it("formats provenance group items with communities and one-off source metadata", async () => {
+    const { formatProvenanceGroupItem } =
+      await import("../src/cli/room-manager");
+
+    // 1. Standalone group from primary backup
+    const standaloneGroup = {
+      jid: "120363011111111111@g.us",
+      subject: "Lekki Residents",
+      communityName: null,
+      sources: [
+        {
+          sourceType: "primary",
+          sourceLabel: "Primary Backup",
+          ownerPhone: null,
+          scannedAt: Date.now(),
+        },
+      ],
+    };
+    const standaloneResult = formatProvenanceGroupItem(standaloneGroup);
+    expect(standaloneResult).toContain("Lekki Residents");
+    expect(standaloneResult).toContain("[Standalone]");
+
+    // 2. Group with parent community
+    const communityGroup = {
+      jid: "120363022222222222@g.us",
+      subject: "Landlords Forum",
+      communityName: "Real Estate Hub",
+      sources: [
+        {
+          sourceType: "primary",
+          sourceLabel: "Primary Backup",
+          ownerPhone: null,
+          scannedAt: Date.now(),
+        },
+      ],
+    };
+    const communityResult = formatProvenanceGroupItem(communityGroup);
+    expect(communityResult).toContain("Landlords Forum");
+    expect(communityResult).toContain("Real Estate Hub");
+
+    // 3. Group with one-off source and owner phone
+    const oneoffGroup = {
+      jid: "120363033333333333@g.us",
+      subject: "Tech Founders Hub",
+      communityName: "Tech Hub",
+      sources: [
+        {
+          sourceType: "oneoff",
+          sourceLabel: "Alice Work Phone",
+          ownerPhone: "+2348039876543",
+          scannedAt: Date.now(),
+        },
+      ],
+    };
+    const oneoffResult = formatProvenanceGroupItem(oneoffGroup);
+    expect(oneoffResult).toContain("Tech Founders Hub");
+    expect(oneoffResult).toContain("Tech Hub");
+    expect(oneoffResult).toContain("One-off: Alice Work Phone");
+    expect(oneoffResult).toContain("0803 987 6543");
+  });
+
+  it("identifies whether a group belongs to a room by JID or group name", async () => {
+    const { isGroupInRoom } = await import("../src/services/wape-store");
+
+    const sampleRoom = {
+      id: "investors",
+      groupIds: ["120363011111111111@g.us"],
+      groupNames: ["Lekki Landlords"],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    // Match by JID
+    expect(
+      isGroupInRoom(
+        { jid: "120363011111111111@g.us", subject: "Any Subject" },
+        sampleRoom,
+      ),
+    ).toBe(true);
+
+    // Match by Name
+    expect(
+      isGroupInRoom(
+        { jid: "120363099999999999@g.us", subject: "Lekki Landlords" },
+        sampleRoom,
+      ),
+    ).toBe(true);
+
+    // No match
+    expect(
+      isGroupInRoom(
+        { jid: "120363088888888888@g.us", subject: "Unrelated Group" },
+        sampleRoom,
+      ),
+    ).toBe(false);
+  });
 });

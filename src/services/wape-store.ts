@@ -1089,6 +1089,51 @@ export function getRoomById(id: string): Room | null {
   );
 }
 
+export function isGroupInRoom(
+  group: { jid: string; subject: string },
+  room: Room,
+) {
+  const groupJid = group.jid.toLowerCase();
+  const groupSubject = group.subject.trim().toLowerCase();
+
+  const idMatch = (room.groupIds ?? room.groupJidRowIds ?? []).some((rawId) => {
+    const idString = String(rawId).toLowerCase();
+    return (
+      idString === groupJid ||
+      `${idString}@g.us` === groupJid ||
+      groupJid === `${idString}@s.whatsapp.net`
+    );
+  });
+  if (idMatch) return true;
+
+  const nameMatch = (room.groupNames ?? []).some(
+    (name) => name.trim().toLowerCase() === groupSubject,
+  );
+  if (nameMatch) return true;
+
+  try {
+    const db = getWapeDb();
+    const row = db
+      .query(
+        `SELECT 1 FROM room_groups rg
+         LEFT JOIN groups g ON (rg.group_id = CAST(g.id AS TEXT) OR rg.group_id = g.jid)
+         WHERE rg.room_id = ?
+           AND (
+             rg.group_id = ?
+             OR g.jid = ?
+             OR (LOWER(rg.group_name) = ? AND LOWER(g.subject) = ?)
+           )
+         LIMIT 1`,
+      )
+      .get(room.id, group.jid, group.jid, groupSubject, groupSubject);
+    if (row) return true;
+  } catch {
+    // Database fallback
+  }
+
+  return false;
+}
+
 export function saveRoom(room: Room): void {
   const db = getWapeDb();
   const roomId = room.id.trim().toLowerCase();

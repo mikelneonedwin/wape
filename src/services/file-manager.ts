@@ -10,6 +10,7 @@ import {
   normalizeListName,
   removeContactsFromList,
   saveContactsToList,
+  type Room,
 } from "./wape-store";
 
 /**
@@ -238,6 +239,7 @@ export function getGlobalInventory(): GlobalInventorySummary {
 export function resolveTargetToList(target: string): {
   label: string;
   filePath: string;
+  room?: Room | null;
 } {
   const room = getRoomById(target);
   if (room) {
@@ -247,6 +249,7 @@ export function resolveTargetToList(target: string): {
     return {
       label: `Room '${room.id}'`,
       filePath: listName,
+      room,
     };
   }
 
@@ -254,5 +257,6 @@ export function resolveTargetToList(target: string): {
   return {
     label: clean,
     filePath: clean,
+    room: null,
   };
 }

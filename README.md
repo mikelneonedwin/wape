@@ -131,6 +131,10 @@ wape rooms delete <id> [id2...]
 wape rooms compare
 wape rooms compare <id1> <id2> [id3...]
 
+# Display identified group sources alongside each common contact
+wape rooms compare --source
+wape rooms compare <id1> <id2> --source
+
 # Compare rooms and bundle new contacts + new links to clipboard
 wape rooms bundle <id1> <id2> [id3...]
 
@@ -214,6 +218,10 @@ wape compare
 
 # Compare two or more specific lists or rooms
 wape compare <target1> <target2> [target3...]
+
+# Display identified group sources alongside each common contact
+wape compare --source
+wape compare <target1> <target2> --source
 
 # Compare a VCF file with a room or list
 wape compare contacts.vcf my-room

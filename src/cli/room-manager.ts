@@ -8,10 +8,35 @@ import {
   getRooms,
   normalizeListName,
   saveRoom,
+  type ContactProvenanceGroup,
   type Room,
 } from "../services/wape-store";
+import { formatPhoneNumber } from "../services/phone";
 import { printIgnoredGroups } from "./ignore-manager";
 import { searchCheckbox } from "./search-checkbox";
+
+export function formatProvenanceGroupItem(group: ContactProvenanceGroup) {
+  const comm = group.communityName
+    ? `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ `
+    : `${pc.dim("[Standalone]")} • `;
+
+  const oneoffSources = group.sources.filter(
+    (source) => source.sourceType === "oneoff",
+  );
+  let extraInfo = "";
+  if (oneoffSources.length > 0) {
+    const labels = oneoffSources
+      .map((source) =>
+        source.ownerPhone
+          ? `${source.sourceLabel} • Owner: ${formatPhoneNumber(source.ownerPhone)}`
+          : source.sourceLabel,
+      )
+      .join(", ");
+    extraInfo = ` ${pc.magenta(`(One-off: ${labels})`)}`;
+  }
+
+  return `${comm}${group.subject}${extraInfo}`;
+}
 
 function formatGroupLabel(group: {
   subject: string;

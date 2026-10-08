@@ -33,6 +33,7 @@ import {
 import {
   addGroupsToRoomInteractive,
   createRoomInteractive,
+  formatProvenanceGroupItem,
   printRoomDetail,
   printRoomGroups,
   printRoomsTable,
@@ -55,6 +56,7 @@ import {
   getSavedLinks,
   getSavedLinksFile,
   getWapeConfigFile,
+  isGroupInRoom,
   normalizeListName,
   recordScanProvenance,
   renameRoomId,
@@ -1098,10 +1100,17 @@ roomCmd
     }
   });
 
-async function executeCompare(
-  targets: { label: string; filePath: string }[],
+interface ExecuteCompareOptions {
+  targets: { label: string; filePath: string; room?: Room | null }[];
+  title?: string;
+  source?: boolean;
+}
+
+async function executeCompare({
+  targets,
   title = "Common Contacts Intersection Analysis",
-) {
+  source,
+}: ExecuteCompareOptions) {
   const filePaths = targets.map((t) => t.filePath);
   const diff = getComparisonDiff(filePaths);
   const newSet = new Set(diff.newContacts);
@@ -1124,10 +1133,60 @@ async function executeCompare(
     ),
   );
 
+  const targetRooms = targets
+    .map((t) => t.room)
+    .filter((r): r is Room => Boolean(r));
+
+  const printGroupList = (
+    groups: NonNullable<ReturnType<typeof getContactProvenance>>["groups"],
+  ) => {
+    groups.forEach((group) => {
+      console.log(`    • ${formatProvenanceGroupItem(group)}`);
+    });
+  };
+
   for (const contact of diff.currentCommon) {
     const isNew = newSet.has(contact);
     const badge = isNew ? `  ${pc.bold(pc.green("[NEW]"))}` : "";
     console.log(`${formatPhoneNumber(contact)}${badge}`);
+
+    if (source) {
+      const provenance = getContactProvenance(contact);
+
+      if (targetRooms.length > 0) {
+        const matchedGroups = new Set<string>();
+
+        for (const room of targetRooms) {
+          console.log(`  ${pc.cyan(`Room '${room.id}':`)}`);
+          const roomGroups =
+            provenance?.groups.filter((group) => {
+              const inRoom = isGroupInRoom(group, room);
+              if (inRoom) matchedGroups.add(group.jid);
+              return inRoom;
+            }) ?? [];
+
+          if (roomGroups.length > 0) {
+            printGroupList(roomGroups);
+          } else {
+            console.log(`    • ${pc.dim("(No identified group source)")}`);
+          }
+        }
+
+        const otherGroups =
+          provenance?.groups.filter((group) => !matchedGroups.has(group.jid)) ??
+          [];
+        if (otherGroups.length > 0) {
+          console.log(`  ${pc.dim("Other Groups:")}`);
+          printGroupList(otherGroups);
+        }
+      } else {
+        if (provenance && provenance.groups.length > 0) {
+          printGroupList(provenance.groups);
+        } else {
+          console.log(`    • ${pc.dim("(No identified group source)")}`);
+        }
+      }
+    }
   }
 
   const totalSummary =
@@ -1233,7 +1292,11 @@ roomCmd
   .description(
     "Find and list common contacts across rooms in XXXX XXX XXXX format",
   )
-  .action(async (roomIds?: string[]) => {
+  .option(
+    "-s, --source",
+    "Display identified sources alongside each common contact",
+  )
+  .action(async (roomIds?: string[], options?: { source?: boolean }) => {
     try {
       const allRooms = getRooms();
       let targetRooms: Room[] = [];
@@ -1282,13 +1345,15 @@ roomCmd
         return {
           label: `Room '${r.id}'`,
           filePath: listName,
+          room: r,
         };
       });
 
-      await executeCompare(
-        resolvedTargets,
-        "Rooms Common Contacts Intersection Analysis",
-      );
+      await executeCompare({
+        targets: resolvedTargets,
+        title: "Rooms Common Contacts Intersection Analysis",
+        source: options?.source,
+      });
     } catch (error) {
       console.error(
         pc.red(
@@ -1391,9 +1456,17 @@ program
   .description(
     "Find and list common contacts across multiple lists or rooms in XXXX XXX XXXX format",
   )
-  .action(async (targets?: string[]) => {
+  .option(
+    "-s, --source",
+    "Display identified sources alongside each common contact",
+  )
+  .action(async (targets?: string[], options?: { source?: boolean }) => {
     try {
-      let resolvedTargets: { label: string; filePath: string }[] = [];
+      let resolvedTargets: {
+        label: string;
+        filePath: string;
+        room?: Room | null;
+      }[] = [];
 
       if (!targets || targets.length === 0) {
         const cfg = getAppConfig();
@@ -1418,10 +1491,11 @@ program
         resolvedTargets = targets.map((t) => resolveTargetToList(t));
       }
 
-      await executeCompare(
-        resolvedTargets,
-        "Common Contacts Intersection Analysis",
-      );
+      await executeCompare({
+        targets: resolvedTargets,
+        title: "Common Contacts Intersection Analysis",
+        source: options?.source,
+      });
     } catch (error) {
       console.error(
         pc.red(
@@ -2176,27 +2250,8 @@ const sourceCmd = program
     if (provenance.groups.length > 0) {
       console.log(pc.bold(pc.underline("\nIDENTIFIED GROUPS:")));
       provenance.groups.forEach((g, gIdx) => {
-        const comm = g.communityName
-          ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} └─ `
-          : `${pc.dim("[Standalone]")} • `;
-
-        const oneoffSources = g.sources.filter(
-          (s) => s.sourceType === "oneoff",
-        );
-        let extraInfo = "";
-        if (oneoffSources.length > 0) {
-          const labels = oneoffSources
-            .map((s) =>
-              s.ownerPhone
-                ? `${s.sourceLabel} • Owner: ${formatPhoneNumber(s.ownerPhone)}`
-                : s.sourceLabel,
-            )
-            .join(", ");
-          extraInfo = ` ${pc.magenta(`(One-off: ${labels})`)}`;
-        }
-
         console.log(
-          `  ${pc.bold(`${gIdx + 1}.`)} ${comm}${g.subject}${extraInfo}`,
+          `  ${pc.bold(`${gIdx + 1}.`)} ${formatProvenanceGroupItem(g)}`,
         );
       });
     }
