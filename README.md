@@ -336,6 +336,71 @@ wape links
 
 ---
 
+### 14. Chat Transcript Export (`wape chats export`)
+
+Exports formatted WhatsApp chat transcripts for a contact phone number, direct message chat, group, or username in the native WhatsApp copied format (`[DD/MM, HH:mm] Sender: Message`).
+
+By default, copies the transcript to your clipboard when run interactively, or streams the raw transcript directly to `stdout` when piped or redirected:
+
+```bash
+# Export chat by phone number (copies to clipboard by default)
+wape chats export 08076488738
+
+# Stream directly to stdout when piped
+wape chats export 08076488738 | grep "curl"
+
+# Time and date filtering flags
+wape chats export 08076488738 --since 30m
+wape chats export 08076488738 --since 3d
+wape chats export 08076488738 --from 2025-02-12
+wape chats export 08076488738 --to 2026-02-01
+wape chats export 08076488738 --last-month
+```
+
+### 15. Chat Links Filtering (`wape chats links`)
+
+Filters through messages across all chats to extract WhatsApp group invite links, supporting optional `--since`, `--from`, `--to`, `--last`, and `--count` flags. By default, prints the links and copies them to the clipboard. When piped or redirected, streams the raw links directly to `stdout` without copying to the clipboard:
+
+```bash
+# Print and copy all extracted group invite links
+wape chats links
+
+# Filter links extracted from messages in the last 7 days
+wape chats links --since 7d
+
+# Limit to the last N most recent links
+wape chats links --last 20
+wape chats links --since 30d --last 40
+
+# Count the matching links without printing or copying them
+wape chats links --count
+wape chats links --since 7d --count
+
+# Filter links within a date window
+wape chats links --from 2026-01-01 --to 2026-03-31
+
+# Stream directly to stdout when piped (clipboard copying disabled)
+wape chats links --since 1w | sort -u
+```
+
+### 16. Message Origin Search (`wape chats search`)
+
+Searches across all WhatsApp groups and chats for messages matching a keyword or URL pattern (ideal for finding WhatsApp group invite links). Displays the group name, sender name/phone, timestamp, and message text:
+
+```bash
+# Search for WhatsApp group invite links
+wape chats search "chat.whatsapp.com"
+
+# Count matching messages without printing full results
+wape chats search "chat.whatsapp.com" --count
+wape chats search "modools" --since 7d --count
+
+# Filter by time range and limit results
+wape chats search "modools" --since 7d --limit 10
+```
+
+---
+
 ## 📁 Storage Architecture & Custom Directory (`WAPE_HOME`)
 
 By default, `wape` stores all data inside `~/.wape`. You can override this to any custom directory by setting the `WAPE_HOME` environment variable:

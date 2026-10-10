@@ -10,6 +10,7 @@ import {
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { normalizeNigerianPhoneNumber } from "./phone";
+import { parseDateRange, type ExportFilterOptions } from "./chat-exporter";
 
 export interface Room {
   id: string;
@@ -1256,12 +1257,49 @@ export function renameRoomId(
 /**
  * Links API
  */
-export function getSavedLinks(): string[] {
+export function getSavedLinks(filterOpts?: ExportFilterOptions): string[] {
   const db = getWapeDb();
-  const rows = db
-    .query(`SELECT url FROM saved_links ORDER BY url ASC`)
-    .all() as { url: string }[];
-  return rows.map((r) => r.url);
+  let sql = `SELECT url, saved_at FROM saved_links`;
+  const params: (number | string)[] = [];
+
+  if (filterOpts) {
+    const { startTime, endTime } = parseDateRange(filterOpts);
+    const conditions: string[] = [];
+    if (startTime !== undefined) {
+      conditions.push(`saved_at >= ?`);
+      params.push(startTime);
+    }
+    if (endTime !== undefined) {
+      conditions.push(`saved_at <= ?`);
+      params.push(endTime);
+    }
+    if (conditions.length > 0) {
+      sql += ` WHERE ` + conditions.join(" AND ");
+    }
+  }
+
+  const lastLimit = filterOpts?.last
+    ? typeof filterOpts.last === "string"
+      ? parseInt(filterOpts.last, 10)
+      : filterOpts.last
+    : undefined;
+
+  if (lastLimit !== undefined && lastLimit > 0) {
+    sql += ` ORDER BY saved_at DESC, url ASC LIMIT ?`;
+    params.push(lastLimit);
+    const rows = db.query(sql).all(...params) as {
+      url: string;
+      saved_at: number;
+    }[];
+    return rows.map((r) => r.url).sort((a, b) => a.localeCompare(b));
+  } else {
+    sql += ` ORDER BY url ASC`;
+    const rows = db.query(sql).all(...params) as {
+      url: string;
+      saved_at: number;
+    }[];
+    return rows.map((r) => r.url);
+  }
 }
 
 export function saveLinks(newLinks: string[]): {

@@ -16,6 +16,7 @@ if (existsSync(sandboxDir)) {
 process.env.WAPE_HOME = sandboxDir;
 
 import { describe, expect, it } from "bun:test";
+import type { AppDatabase } from "../src/db";
 import {
   formatPhoneNumber,
   normalizeNigerianPhoneNumber,
@@ -430,6 +431,14 @@ describe("Room Store and Management", () => {
       "https://chat.whatsapp.com/GHI789",
     ]);
 
+    // Test last filter
+    const last2 = getSavedLinks({ last: 2 });
+    expect(last2.length).toBe(2);
+
+    // Test since filter
+    const sinceLinks = getSavedLinks({ since: "1h" });
+    expect(sinceLinks.length).toBe(3);
+
     if (existsSync(linksFile)) unlinkSync(linksFile);
   });
 
@@ -514,6 +523,81 @@ describe("WhatsApp Group Link Extractor", () => {
         "https://chat.whatsapp.com/DQdObCaowLG1vHHHF7Rz3N?mode=gi_t",
       ),
     ).toBe("https://chat.whatsapp.com/DQdObCaowLG1vHHHF7Rz3N");
+  });
+
+  it("extracts and filters whatsapp group links by date range", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { extractWhatsAppGroupLinks } =
+      await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER, text_data TEXT, timestamp INTEGER);
+    `);
+
+    const t1 = new Date("2026-01-10T10:00:00Z").getTime();
+    const t2 = new Date("2026-02-15T12:00:00Z").getTime();
+    const t3 = new Date("2026-03-20T15:00:00Z").getTime();
+
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp) VALUES
+        (1, 'Join here: https://chat.whatsapp.com/LinkOne123?s=test', ?),
+        (1, 'Check this group: https://chat.whatsapp.com/LinkTwo456', ?),
+        (2, 'Another one https://chat.whatsapp.com/LinkThree789', ?);`,
+      [t1, t2, t3],
+    );
+
+    const db = drizzle(sqlite, { schema }) as unknown as AppDatabase;
+
+    // All links without filter
+    const allLinks = await extractWhatsAppGroupLinks(db);
+    expect(allLinks).toEqual([
+      "https://chat.whatsapp.com/LinkOne123",
+      "https://chat.whatsapp.com/LinkThree789",
+      "https://chat.whatsapp.com/LinkTwo456",
+    ]);
+
+    // Filter from 2026-02-01
+    const fromLinks = await extractWhatsAppGroupLinks(db, {
+      from: "2026-02-01",
+    });
+    expect(fromLinks).toEqual([
+      "https://chat.whatsapp.com/LinkThree789",
+      "https://chat.whatsapp.com/LinkTwo456",
+    ]);
+
+    // Filter to 2026-02-28
+    const toLinks = await extractWhatsAppGroupLinks(db, {
+      to: "2026-02-28",
+    });
+    expect(toLinks).toEqual([
+      "https://chat.whatsapp.com/LinkOne123",
+      "https://chat.whatsapp.com/LinkTwo456",
+    ]);
+
+    // Filter bounded range
+    const rangeLinks = await extractWhatsAppGroupLinks(db, {
+      from: "2026-02-01",
+      to: "2026-02-28",
+    });
+    expect(rangeLinks).toEqual(["https://chat.whatsapp.com/LinkTwo456"]);
+
+    // Limit to the last 1 most recent link (t3: LinkThree789)
+    const lastOneLink = await extractWhatsAppGroupLinks(db, {
+      last: 1,
+    });
+    expect(lastOneLink).toEqual(["https://chat.whatsapp.com/LinkThree789"]);
+
+    // Limit to the last 2 most recent links (t3: LinkThree789, t2: LinkTwo456) sorted alphabetically
+    const lastTwoLinks = await extractWhatsAppGroupLinks(db, {
+      last: 2,
+    });
+    expect(lastTwoLinks).toEqual([
+      "https://chat.whatsapp.com/LinkThree789",
+      "https://chat.whatsapp.com/LinkTwo456",
+    ]);
   });
 });
 
@@ -1219,5 +1303,99 @@ describe("Group and Community Extractor", () => {
         sampleRoom,
       ),
     ).toBe(false);
+  });
+});
+
+describe("Chat Exporter & Search Service", () => {
+  it("parses relative and absolute date ranges correctly", async () => {
+    const { parseDateRange } = await import("../src/services/chat-exporter");
+
+    const fixedNow = new Date("2026-10-08T12:00:00Z").getTime();
+
+    // --since 30m
+    const res30m = parseDateRange({ since: "30m" }, fixedNow);
+    expect(res30m.startTime).toBe(fixedNow - 30 * 60 * 1000);
+
+    // --since 3d
+    const res3d = parseDateRange({ since: "3d" }, fixedNow);
+    expect(res3d.startTime).toBe(fixedNow - 3 * 24 * 60 * 60 * 1000);
+
+    // --from and --to
+    const resFromTo = parseDateRange(
+      { from: "2026-01-01", to: "2026-02-01" },
+      fixedNow,
+    );
+    expect(resFromTo.startTime).toBe(new Date("2026-01-01").getTime());
+    expect(resFromTo.endTime).toBeDefined();
+
+    // --last-month
+    const resLastMonth = parseDateRange({ lastMonth: true }, fixedNow);
+    expect(resLastMonth.startTime).toBeDefined();
+    expect(resLastMonth.endTime).toBeDefined();
+    expect(resLastMonth.startTime!).toBeLessThan(resLastMonth.endTime!);
+  });
+
+  it("formats messages into the standard WhatsApp copied transcript format", async () => {
+    const { formatExportedChat, formatSenderPhone } =
+      await import("../src/services/chat-exporter");
+
+    expect(formatSenderPhone("+2348076488738")).toBe("08076488738");
+    expect(formatSenderPhone("2347013930157")).toBe("07013930157");
+
+    const sampleDate = new Date("2026-10-08T14:26:00").getTime();
+    const formatted = formatExportedChat([
+      {
+        id: 1,
+        chatRowId: 100,
+        fromMe: false,
+        timestamp: sampleDate,
+        textData: "Hello world",
+        senderNameOrPhone: "07013930157",
+      },
+      {
+        id: 2,
+        chatRowId: 100,
+        fromMe: true,
+        timestamp: sampleDate + 60000,
+        textData: "Hi there",
+        senderNameOrPhone: "Winner Edwin",
+      },
+    ]);
+
+    expect(formatted).toContain("[08/10, 14:26] 07013930157: Hello world");
+    expect(formatted).toContain("[08/10, 14:27] Winner Edwin: Hi there");
+  });
+
+  it("counts messages matching query accurately", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { countMessages } = await import("../src/services/chat-exporter");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER, text_data TEXT, timestamp INTEGER);
+    `);
+
+    const t1 = new Date("2026-01-10T10:00:00Z").getTime();
+    const t2 = new Date("2026-02-15T12:00:00Z").getTime();
+
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp) VALUES
+        (1, 'Join here: https://chat.whatsapp.com/LinkOne123', ?),
+        (1, 'No link here', ?),
+        (2, 'Another https://chat.whatsapp.com/LinkTwo456', ?);`,
+      [t1, t2, t2],
+    );
+
+    const db = drizzle(sqlite, { schema }) as unknown as AppDatabase;
+
+    const countAll = await countMessages(db, "chat.whatsapp.com", {});
+    expect(countAll).toBe(2);
+
+    const countSince = await countMessages(db, "chat.whatsapp.com", {
+      from: "2026-02-01",
+    });
+    expect(countSince).toBe(1);
   });
 });

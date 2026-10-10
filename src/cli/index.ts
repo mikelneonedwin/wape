@@ -17,6 +17,13 @@ import {
   type GroupSummary,
 } from "../services/extractor";
 import {
+  countMessages,
+  exportChatMessages,
+  resolveTargetChat,
+  searchMessages,
+  type ExportFilterOptions,
+} from "../services/chat-exporter";
+import {
   getCommonContacts,
   getComparisonDiff,
   getGlobalInventory,
@@ -2176,6 +2183,235 @@ program
       process.exit(1);
     }
   });
+
+/**
+ * Chats Command Group
+ */
+const chatsCmd = program
+  .command("chats")
+  .alias("chat")
+  .description("Export and manage WhatsApp chats");
+
+chatsCmd
+  .command("export <target>")
+  .description(
+    "Export formatted WhatsApp chat transcript for a contact phone number, group, or username",
+  )
+  .option(
+    "--since <duration>",
+    "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
+  )
+  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
+  .option(
+    "--last-month",
+    "Filter messages to only those sent during last month",
+  )
+  .action(async (target: string, opts: ExportFilterOptions) => {
+    try {
+      const { db } = await loadDbAndGroups();
+      const resolvedChat = await resolveTargetChat(db, target);
+
+      if (!resolvedChat) {
+        console.error(
+          pc.red(
+            `\n❌ Error: Could not find chat or contact matching: '${target}'\n`,
+          ),
+        );
+        process.exit(1);
+      }
+
+      const { text, messageCount } = await exportChatMessages(
+        db,
+        resolvedChat,
+        opts,
+      );
+
+      if (messageCount === 0) {
+        console.log(
+          pc.yellow(
+            `\nNo messages found matching the specified criteria for chat '${resolvedChat.subject || resolvedChat.phone || target}'.\n`,
+          ),
+        );
+        return;
+      }
+
+      // If piped / redirected to file or another command, stream raw text to stdout
+      if (!process.stdout.isTTY) {
+        process.stdout.write(text + "\n");
+        return;
+      }
+
+      // Default interactive terminal behavior: copy to clipboard and print summary
+      const copied = await copyToClipboard(text);
+      if (copied) {
+        console.log(
+          pc.green(
+            `\n📋 Copied ${messageCount.toLocaleString()} message(s) to clipboard from chat: ${pc.bold(resolvedChat.subject || resolvedChat.phone || target)}\n`,
+          ),
+        );
+      } else {
+        // If headless/no clipboard available, print directly to terminal
+        console.log(text);
+      }
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+chatsCmd
+  .command("links")
+  .description(
+    "Filter through and print WhatsApp group invite links from the WAPE database",
+  )
+  .option(
+    "--since <duration>",
+    "Filter links saved since duration (e.g. 30m, 3d, 1w, 2h)",
+  )
+  .option("--from <date>", "Filter links saved starting from date (YYYY-MM-DD)")
+  .option("--to <date>", "Filter links saved up to date (YYYY-MM-DD)")
+  .option("--last-month", "Filter links saved during last month")
+  .option(
+    "--last <number>",
+    "Limit to the last N most recently saved links (e.g. --last 20, --last 40)",
+  )
+  .option(
+    "-c, --count",
+    "Print the total count of matching links rather than printing the links",
+  )
+  .action(async (opts: ExportFilterOptions & { count?: boolean }) => {
+    try {
+      const links = getSavedLinks(opts);
+
+      if (opts.count) {
+        console.log(links.length);
+        return;
+      }
+
+      if (links.length === 0) {
+        if (process.stdout.isTTY) {
+          console.log(
+            pc.yellow(
+              "\nNo WhatsApp group invite links found matching the specified criteria.\n",
+            ),
+          );
+        }
+        return;
+      }
+
+      // If piped / redirected to file or another command, stream raw links to stdout without copying to clipboard
+      if (!process.stdout.isTTY) {
+        for (const link of links) {
+          process.stdout.write(link + "\n");
+        }
+        return;
+      }
+
+      // Default interactive terminal behavior: print links and copy to clipboard
+      for (const link of links) {
+        console.log(link);
+      }
+
+      const copied = await copyToClipboard(links.join("\n"));
+      if (copied) {
+        console.log(
+          pc.dim(
+            `\n📋 Copied ${links.length.toLocaleString()} link(s) to clipboard.\n`,
+          ),
+        );
+      }
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
+
+chatsCmd
+  .command("search <query>")
+  .description(
+    "Search for messages across WhatsApp groups and chats (e.g. finding group invite links or keywords)",
+  )
+  .option(
+    "--since <duration>",
+    "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
+  )
+  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
+  .option(
+    "--last-month",
+    "Filter messages to only those sent during last month",
+  )
+  .option("-l, --limit <number>", "Limit the number of search results returned")
+  .option(
+    "-c, --count",
+    "Print the total count of matching messages rather than printing the results",
+  )
+  .action(
+    async (
+      query: string,
+      opts: ExportFilterOptions & { limit?: string; count?: boolean },
+    ) => {
+      try {
+        const { db } = await loadDbAndGroups();
+
+        if (opts.count) {
+          const totalCount = await countMessages(db, query, opts);
+          console.log(totalCount);
+          return;
+        }
+
+        const limitNum = opts.limit ? parseInt(opts.limit, 10) : undefined;
+        const results = await searchMessages(db, query, opts, limitNum);
+
+        if (results.length === 0) {
+          console.log(pc.yellow(`\nNo messages found matching '${query}'.\n`));
+          return;
+        }
+
+        console.log(pc.cyan("\n" + "=".repeat(70)));
+        console.log(
+          pc.bold(
+            pc.cyan(
+              `🔍 SEARCH RESULTS FOR: "${query}" (${results.length} match${results.length === 1 ? "" : "es"})`,
+            ),
+          ),
+        );
+        console.log("=".repeat(70) + "\n");
+
+        results.forEach((r, idx) => {
+          const dateStr = new Date(r.timestamp).toLocaleString();
+          console.log(
+            `${pc.bold((idx + 1).toString().padStart(2, " "))}. ${pc.cyan(`[🏛️  ${r.groupName}]`)} • ${pc.yellow(r.senderDisplay)} • ${pc.dim(dateStr)}`,
+          );
+          console.log(
+            `    ${pc.dim("Message:")} ${r.textData.replace(/\n/g, " ")}\n`,
+          );
+        });
+
+        console.log("=".repeat(70) + "\n");
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
+chatsCmd.action(() => {
+  chatsCmd.outputHelp();
+});
 
 /**
  * Lists overview

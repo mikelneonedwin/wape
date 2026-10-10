@@ -12,6 +12,7 @@ import {
   normalizeOwnerPhoneNumber,
 } from "./phone";
 import { saveRoom, type Room } from "./wape-store";
+import { parseDateRange, type ExportFilterOptions } from "./chat-exporter";
 
 export interface GroupSummary {
   jidRowId: number;
@@ -651,19 +652,42 @@ export function normalizeWhatsAppGroupLink(raw: string): string | null {
 
 /**
  * Extracts all unique WhatsApp group invite links from all messages in the database,
+ * optionally filtered by date/time and limited to the last N newest links,
  * cleaned of search parameters and sorted alphabetically.
  */
 export async function extractWhatsAppGroupLinks(
   db: AppDatabase,
+  filterOpts?: ExportFilterOptions,
 ): Promise<string[]> {
-  const messageRows = db.$client
-    .query(
-      `SELECT text_data as textData FROM message WHERE text_data LIKE '%chat.whatsapp.com%'`,
-    )
-    .all() as { textData: string | null }[];
+  let sql = `SELECT text_data as textData FROM message WHERE text_data LIKE '%chat.whatsapp.com%'`;
+  const params: (number | string)[] = [];
+
+  if (filterOpts) {
+    const { startTime, endTime } = parseDateRange(filterOpts);
+    if (startTime !== undefined) {
+      sql += ` AND timestamp >= ?`;
+      params.push(startTime);
+    }
+    if (endTime !== undefined) {
+      sql += ` AND timestamp <= ?`;
+      params.push(endTime);
+    }
+  }
+
+  sql += ` ORDER BY timestamp DESC, _id DESC`;
+
+  const messageRows = db.$client.query(sql).all(...params) as {
+    textData: string | null;
+  }[];
 
   const uniqueLinks = new Set<string>();
   const linkRegex = /(?:https?:\/\/)?chat\.whatsapp\.com\/([a-zA-Z0-9_-]+)/gi;
+
+  const lastLimit = filterOpts?.last
+    ? typeof filterOpts.last === "string"
+      ? parseInt(filterOpts.last, 10)
+      : filterOpts.last
+    : undefined;
 
   for (const row of messageRows) {
     if (!row.textData) continue;
@@ -671,7 +695,21 @@ export async function extractWhatsAppGroupLinks(
     while ((match = linkRegex.exec(row.textData)) !== null) {
       if (match[1]) {
         uniqueLinks.add(`https://chat.whatsapp.com/${match[1]}`);
+        if (
+          lastLimit !== undefined &&
+          lastLimit > 0 &&
+          uniqueLinks.size >= lastLimit
+        ) {
+          break;
+        }
       }
+    }
+    if (
+      lastLimit !== undefined &&
+      lastLimit > 0 &&
+      uniqueLinks.size >= lastLimit
+    ) {
+      break;
     }
   }
 
