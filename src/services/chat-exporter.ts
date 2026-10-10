@@ -143,20 +143,57 @@ export function formatSenderPhone(raw: string | null | undefined): string {
   return raw;
 }
 
+export interface ResolveChatOptions {
+  fuzzy?: boolean;
+  allowedJidRowIds?: Set<number>;
+}
+
 /**
- * Finds target chat from user query (phone number, contact name/username, group subject, or chat ID).
+ * Finds matching chats from user query (phone number, contact name/username, group subject, or chat/JID identifier).
  */
-export async function resolveTargetChat(
+export async function findMatchingChats(
   db: AppDatabase,
   targetQuery: string,
-): Promise<ResolvedChat | null> {
+  options?: ResolveChatOptions,
+): Promise<ResolvedChat[]> {
   const query = targetQuery.trim();
-  const digitsOnly = query.replace(/\D/g, "");
+  if (!query) return [];
 
-  // 1. Check if direct chat by phone number
-  if (digitsOnly.length >= 7) {
-    const lastDigits = digitsOnly.slice(-10);
-    const phoneMatches = db.$client
+  const fuzzy = Boolean(options?.fuzzy);
+  const digitsOnly = query.replace(/\D/g, "");
+  const results: ResolvedChat[] = [];
+  const seenChatIds = new Set<number>();
+
+  const addResult = (row: {
+    chatId: number;
+    subject: string | null;
+    phone: string | null;
+    username: string | null;
+    groupType: number | null;
+    jidRowId?: number | null;
+  }) => {
+    if (seenChatIds.has(row.chatId)) return;
+    if (
+      options?.allowedJidRowIds &&
+      row.jidRowId !== undefined &&
+      row.jidRowId !== null &&
+      !options.allowedJidRowIds.has(row.jidRowId)
+    ) {
+      return;
+    }
+    seenChatIds.add(row.chatId);
+    results.push({
+      chatId: row.chatId,
+      subject: row.subject,
+      phone: row.phone,
+      username: row.username,
+      isGroup: Boolean(row.subject || (row.groupType && row.groupType > 0)),
+    });
+  };
+
+  // 1. Direct group / contact JID string match (e.g. 12036304...8@g.us or ...@s.whatsapp.net)
+  if (query.includes("@")) {
+    const jidRows = db.$client
       .query<
         {
           chatId: number;
@@ -164,8 +201,9 @@ export async function resolveTargetChat(
           phone: string | null;
           username: string | null;
           groupType: number | null;
+          jidRowId: number | null;
         },
-        [string]
+        [string, string]
       >(
         `
         SELECT 
@@ -173,33 +211,24 @@ export async function resolveTargetChat(
           c.subject as subject,
           pj.user as phone,
           ldn.username as username,
-          c.group_type as groupType
+          c.group_type as groupType,
+          c.jid_row_id as jidRowId
         FROM chat c
+        JOIN jid j ON c.jid_row_id = j._id
         LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
         LEFT JOIN jid pj ON jm.jid_row_id = pj._id
         LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
-        WHERE pj.user LIKE ?
-        LIMIT 1
+        WHERE j.raw_string = ? COLLATE NOCASE OR (j.user || '@' || j.server) = ? COLLATE NOCASE
       `,
       )
-      .get(`%${lastDigits}%`);
+      .all(query, query);
 
-    if (phoneMatches) {
-      return {
-        chatId: phoneMatches.chatId,
-        subject: phoneMatches.subject,
-        phone: phoneMatches.phone,
-        username: phoneMatches.username,
-        isGroup: Boolean(
-          phoneMatches.subject ||
-          (phoneMatches.groupType && phoneMatches.groupType > 0),
-        ),
-      };
-    }
+    jidRows.forEach(addResult);
+    if (results.length > 0) return results;
   }
 
-  // 2. Check by chat subject / group name (exact or substring)
-  const subjectMatch = db.$client
+  // 2. Exact match by chat subject / group name (case-insensitive)
+  const exactSubjectRows = db.$client
     .query<
       {
         chatId: number;
@@ -207,45 +236,7 @@ export async function resolveTargetChat(
         phone: string | null;
         username: string | null;
         groupType: number | null;
-      },
-      [string, string]
-    >(
-      `
-      SELECT 
-        c._id as chatId,
-        c.subject as subject,
-        pj.user as phone,
-        ldn.username as username,
-        c.group_type as groupType
-      FROM chat c
-      LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
-      LEFT JOIN jid pj ON jm.jid_row_id = pj._id
-      LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
-      WHERE c.subject = ? OR c.subject LIKE ?
-      LIMIT 1
-    `,
-    )
-    .get(query, `%${query}%`);
-
-  if (subjectMatch) {
-    return {
-      chatId: subjectMatch.chatId,
-      subject: subjectMatch.subject,
-      phone: subjectMatch.phone,
-      username: subjectMatch.username,
-      isGroup: true,
-    };
-  }
-
-  // 3. Check by username or contact name
-  const usernameMatch = db.$client
-    .query<
-      {
-        chatId: number;
-        subject: string | null;
-        phone: string | null;
-        username: string | null;
-        groupType: number | null;
+        jidRowId: number | null;
       },
       [string]
     >(
@@ -255,31 +246,173 @@ export async function resolveTargetChat(
         c.subject as subject,
         pj.user as phone,
         ldn.username as username,
-        c.group_type as groupType
+        c.group_type as groupType,
+        c.jid_row_id as jidRowId
       FROM chat c
       LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
       LEFT JOIN jid pj ON jm.jid_row_id = pj._id
       LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
-      WHERE ldn.username LIKE ?
-      LIMIT 1
+      WHERE c.subject = ? COLLATE NOCASE
     `,
     )
-    .get(`%${query}%`);
+    .all(query);
 
-  if (usernameMatch) {
-    return {
-      chatId: usernameMatch.chatId,
-      subject: usernameMatch.subject,
-      phone: usernameMatch.phone,
-      username: usernameMatch.username,
-      isGroup: Boolean(
-        usernameMatch.subject ||
-        (usernameMatch.groupType && usernameMatch.groupType > 0),
-      ),
-    };
+  exactSubjectRows.forEach(addResult);
+  if (!fuzzy && results.length > 0) {
+    return results;
   }
 
-  return null;
+  // 3. Exact match by contact username
+  const exactUsernameRows = db.$client
+    .query<
+      {
+        chatId: number;
+        subject: string | null;
+        phone: string | null;
+        username: string | null;
+        groupType: number | null;
+        jidRowId: number | null;
+      },
+      [string]
+    >(
+      `
+      SELECT 
+        c._id as chatId,
+        c.subject as subject,
+        pj.user as phone,
+        ldn.username as username,
+        c.group_type as groupType,
+        c.jid_row_id as jidRowId
+      FROM chat c
+      LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
+      LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+      LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
+      WHERE ldn.username = ? COLLATE NOCASE
+    `,
+    )
+    .all(query);
+
+  exactUsernameRows.forEach(addResult);
+  if (!fuzzy && results.length > 0) {
+    return results;
+  }
+
+  // 4. Exact match by phone number (if digitsOnly)
+  if (digitsOnly.length >= 7) {
+    const lastDigits = digitsOnly.slice(-10);
+    const phoneRows = db.$client
+      .query<
+        {
+          chatId: number;
+          subject: string | null;
+          phone: string | null;
+          username: string | null;
+          groupType: number | null;
+          jidRowId: number | null;
+        },
+        [string, string]
+      >(
+        `
+        SELECT 
+          c._id as chatId,
+          c.subject as subject,
+          pj.user as phone,
+          ldn.username as username,
+          c.group_type as groupType,
+          c.jid_row_id as jidRowId
+        FROM chat c
+        LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
+        LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+        LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
+        WHERE pj.user = ? OR pj.user LIKE ?
+      `,
+      )
+      .all(digitsOnly, `%${lastDigits}`);
+
+    phoneRows.forEach(addResult);
+    if (!fuzzy && results.length > 0) {
+      return results;
+    }
+  }
+
+  // 5. If fuzzy matching is enabled, search by substring across subjects and usernames
+  if (fuzzy) {
+    const fuzzySubjectRows = db.$client
+      .query<
+        {
+          chatId: number;
+          subject: string | null;
+          phone: string | null;
+          username: string | null;
+          groupType: number | null;
+          jidRowId: number | null;
+        },
+        [string]
+      >(
+        `
+        SELECT 
+          c._id as chatId,
+          c.subject as subject,
+          pj.user as phone,
+          ldn.username as username,
+          c.group_type as groupType,
+          c.jid_row_id as jidRowId
+        FROM chat c
+        LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
+        LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+        LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
+        WHERE c.subject LIKE ? COLLATE NOCASE
+      `,
+      )
+      .all(`%${query}%`);
+
+    fuzzySubjectRows.forEach(addResult);
+
+    const fuzzyUsernameRows = db.$client
+      .query<
+        {
+          chatId: number;
+          subject: string | null;
+          phone: string | null;
+          username: string | null;
+          groupType: number | null;
+          jidRowId: number | null;
+        },
+        [string]
+      >(
+        `
+        SELECT 
+          c._id as chatId,
+          c.subject as subject,
+          pj.user as phone,
+          ldn.username as username,
+          c.group_type as groupType,
+          c.jid_row_id as jidRowId
+        FROM chat c
+        LEFT JOIN jid_map jm ON c.jid_row_id = jm.lid_row_id
+        LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+        LEFT JOIN lid_display_name ldn ON c.jid_row_id = ldn.lid_row_id
+        WHERE ldn.username LIKE ? COLLATE NOCASE
+      `,
+      )
+      .all(`%${query}%`);
+
+    fuzzyUsernameRows.forEach(addResult);
+  }
+
+  return results;
+}
+
+/**
+ * Finds target chat from user query (phone number, contact name/username, group subject, or chat ID).
+ */
+export async function resolveTargetChat(
+  db: AppDatabase,
+  targetQuery: string,
+  options?: ResolveChatOptions,
+): Promise<ResolvedChat | null> {
+  const matches = await findMatchingChats(db, targetQuery, options);
+  return matches[0] ?? null;
 }
 
 /**

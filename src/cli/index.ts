@@ -19,9 +19,12 @@ import {
 import {
   countMessages,
   exportChatMessages,
+  findMatchingChats,
+  formatSenderPhone,
   resolveTargetChat,
   searchMessages,
   type ExportFilterOptions,
+  type ResolvedChat,
 } from "../services/chat-exporter";
 import {
   getCommonContacts,
@@ -2194,7 +2197,7 @@ const chatsCmd = program
   .description("Export and manage WhatsApp chats");
 
 chatsCmd
-  .command("export <target>")
+  .command("export [target]")
   .description(
     "Export formatted WhatsApp chat transcript for a contact phone number, group, or username",
   )
@@ -2208,62 +2211,205 @@ chatsCmd
     "--last-month",
     "Filter messages to only those sent during last month",
   )
-  .action(async (target: string, opts: ExportFilterOptions) => {
-    try {
-      const { db } = await loadDbAndGroups();
-      const resolvedChat = await resolveTargetChat(db, target);
+  .option("--room <id>", "Filter groups to only those in the specified room")
+  .option(
+    "--group-search <query>",
+    "Filter groups matching the search query by name",
+  )
+  .option(
+    "--fuzzy",
+    "Enable fuzzy/partial matching on target name or phone number",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(
+    async (
+      target?: string,
+      opts?: ExportFilterOptions & {
+        room?: string;
+        groupSearch?: string;
+        fuzzy?: boolean;
+        backup?: string;
+        key?: string;
+      },
+    ) => {
+      try {
+        const { db, groups } = await loadDbAndGroups(opts?.backup, opts?.key);
 
-      if (!resolvedChat) {
+        let scopedGroups = groups;
+        let allowedJidRowIds: Set<number> | undefined;
+
+        if (opts?.room) {
+          const cleanRoomId = opts.room.trim().toLowerCase();
+          const room = getRoomById(cleanRoomId);
+          if (!room) {
+            console.error(
+              pc.red(
+                `\n❌ Error: Room '${opts.room}' not found. Use 'wape rooms list' to see all rooms.\n`,
+              ),
+            );
+            process.exit(1);
+          }
+          const resolved = resolveRoomGroups(room, groups);
+          const activeRowIds = new Set(resolved.activeJidRowIds);
+          const activeJids = new Set(
+            resolved.activeJidStrings.map((j) => j.toLowerCase()),
+          );
+          scopedGroups = groups.filter(
+            (g) =>
+              activeRowIds.has(g.jidRowId) ||
+              activeJids.has(g.jidString.toLowerCase()),
+          );
+          allowedJidRowIds = new Set(scopedGroups.map((g) => g.jidRowId));
+        }
+
+        if (opts?.groupSearch) {
+          const searchLower = opts.groupSearch.trim().toLowerCase();
+          scopedGroups = scopedGroups.filter((g) =>
+            g.subject.toLowerCase().includes(searchLower),
+          );
+          if (scopedGroups.length === 0) {
+            console.log(
+              pc.yellow(
+                `\nNo groups found matching --group-search '${opts.groupSearch}'${opts.room ? ` in room '${opts.room}'` : ""}.\n`,
+              ),
+            );
+            return;
+          }
+          allowedJidRowIds = new Set(scopedGroups.map((g) => g.jidRowId));
+        }
+
+        let resolvedChat: ResolvedChat | null = null;
+
+        if (target && target.trim()) {
+          const cleanTarget = target.trim();
+          const matches = await findMatchingChats(db, cleanTarget, {
+            fuzzy: opts?.fuzzy,
+            allowedJidRowIds,
+          });
+
+          if (matches.length === 1) {
+            resolvedChat = matches[0] ?? null;
+          } else if (matches.length > 1) {
+            if (!process.stdout.isTTY) {
+              resolvedChat = matches[0] ?? null;
+            } else {
+              const pickedChatId = await select<number>({
+                message: `Multiple chats matched '${cleanTarget}'. Select chat to export:`,
+                choices: matches.map((m) => ({
+                  name: `${m.subject || m.username || formatSenderPhone(m.phone) || "Unknown"} ${m.isGroup ? pc.dim("(Group)") : pc.dim("(Direct Chat)")}`,
+                  value: m.chatId,
+                })),
+              });
+              resolvedChat =
+                matches.find((m) => m.chatId === pickedChatId) ?? null;
+            }
+          } else {
+            console.error(
+              pc.red(
+                `\n❌ Error: Could not find chat or contact matching: '${cleanTarget}'${!opts?.fuzzy ? pc.dim(" (use --fuzzy to enable partial matching)") : ""}\n`,
+              ),
+            );
+            process.exit(1);
+          }
+        } else {
+          // No target provided: pick from scoped groups
+          if (scopedGroups.length === 0) {
+            console.log(pc.yellow("\nNo group chats available to export.\n"));
+            return;
+          }
+
+          if (
+            scopedGroups.length === 1 &&
+            opts?.groupSearch &&
+            scopedGroups[0]
+          ) {
+            // Auto-select single matching group from --group-search
+            const singleGroup = scopedGroups[0];
+            resolvedChat = await resolveTargetChat(db, singleGroup.subject, {
+              allowedJidRowIds: new Set([singleGroup.jidRowId]),
+            });
+          } else {
+            if (!process.stdout.isTTY) {
+              console.error(
+                pc.red(
+                  "\n❌ Error: Target chat/group or --group-search required when running non-interactively.\n",
+                ),
+              );
+              process.exit(1);
+            }
+
+            const pickedJidRowId = await select<number>({
+              message: "Select group chat to export transcript:",
+              choices: scopedGroups.map((g) => ({
+                name: formatGroupLabel(g),
+                value: g.jidRowId,
+              })),
+              pageSize: 16,
+            });
+
+            const pickedGroup = scopedGroups.find(
+              (g) => g.jidRowId === pickedJidRowId,
+            );
+            if (pickedGroup) {
+              resolvedChat = await resolveTargetChat(db, pickedGroup.subject, {
+                allowedJidRowIds: new Set([pickedGroup.jidRowId]),
+              });
+            }
+          }
+        }
+
+        if (!resolvedChat) {
+          console.error(pc.red("\n❌ Error: Could not resolve target chat.\n"));
+          process.exit(1);
+        }
+
+        const { text, messageCount } = await exportChatMessages(
+          db,
+          resolvedChat,
+          opts ?? {},
+        );
+
+        if (messageCount === 0) {
+          console.log(
+            pc.yellow(
+              `\nNo messages found matching the specified criteria for chat '${resolvedChat.subject || resolvedChat.phone || target || "Selected Chat"}'.\n`,
+            ),
+          );
+          return;
+        }
+
+        // If piped / redirected to file or another command, stream raw text to stdout
+        if (!process.stdout.isTTY) {
+          process.stdout.write(text + "\n");
+          return;
+        }
+
+        // Default interactive terminal behavior: copy to clipboard and print summary
+        const copied = await copyToClipboard(text);
+        if (copied) {
+          console.log(
+            pc.green(
+              `\n📋 Copied ${messageCount.toLocaleString()} message(s) to clipboard from chat: ${pc.bold(resolvedChat.subject || resolvedChat.phone || target || "Selected Group")}\n`,
+            ),
+          );
+        } else {
+          // If headless/no clipboard available, print directly to terminal
+          console.log(text);
+        }
+      } catch (error) {
         console.error(
           pc.red(
-            `\n❌ Error: Could not find chat or contact matching: '${target}'\n`,
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
           ),
         );
         process.exit(1);
       }
-
-      const { text, messageCount } = await exportChatMessages(
-        db,
-        resolvedChat,
-        opts,
-      );
-
-      if (messageCount === 0) {
-        console.log(
-          pc.yellow(
-            `\nNo messages found matching the specified criteria for chat '${resolvedChat.subject || resolvedChat.phone || target}'.\n`,
-          ),
-        );
-        return;
-      }
-
-      // If piped / redirected to file or another command, stream raw text to stdout
-      if (!process.stdout.isTTY) {
-        process.stdout.write(text + "\n");
-        return;
-      }
-
-      // Default interactive terminal behavior: copy to clipboard and print summary
-      const copied = await copyToClipboard(text);
-      if (copied) {
-        console.log(
-          pc.green(
-            `\n📋 Copied ${messageCount.toLocaleString()} message(s) to clipboard from chat: ${pc.bold(resolvedChat.subject || resolvedChat.phone || target)}\n`,
-          ),
-        );
-      } else {
-        // If headless/no clipboard available, print directly to terminal
-        console.log(text);
-      }
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
+    },
+  );
 
 chatsCmd
   .command("links")

@@ -1525,4 +1525,105 @@ describe("Chat Exporter & Search Service", () => {
       console.log = origLog;
     }
   });
+
+  it("resolves and exports group chats with exact match, fuzzy match, and group JID", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { findMatchingChats, resolveTargetChat, exportChatMessages } =
+      await import("../src/services/chat-exporter");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE props (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, server TEXT, raw_string TEXT, type INTEGER);
+      CREATE TABLE jid_map (lid_row_id INTEGER, jid_row_id INTEGER);
+      CREATE TABLE lid_display_name (lid_row_id INTEGER PRIMARY KEY, username TEXT);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER, subject TEXT, group_type INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER, user_jid_row_id INTEGER, label TEXT);
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER, sender_jid_row_id INTEGER, from_me INTEGER, timestamp INTEGER, text_data TEXT);
+    `);
+
+    sqlite.run(
+      `INSERT INTO props (key, value) VALUES ('user_push_name', 'Edwin');`,
+    );
+
+    // Group 1: Design
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server, raw_string, type) VALUES (1, '120363011111111111', 'g.us', '120363011111111111@g.us', 1);`,
+    );
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (10, 1, 'Design', 0);`,
+    );
+
+    // Group 2: Design Team
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server, raw_string, type) VALUES (2, '120363022222222222', 'g.us', '120363022222222222@g.us', 1);`,
+    );
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES (20, 2, 'Design Team', 0);`,
+    );
+
+    // Participant user: Alex
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server, raw_string, type) VALUES (3, '2348012345678', 's.whatsapp.net', '2348012345678@s.whatsapp.net', 0);`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, label) VALUES (1, 3, 'Alex Designer');`,
+    );
+
+    // Messages in Design group (chat_row_id = 10)
+    const t1 = new Date("2026-10-01T10:00:00Z").getTime();
+    const t2 = new Date("2026-10-01T10:05:00Z").getTime();
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, sender_jid_row_id, from_me, timestamp, text_data) VALUES
+        (10, 3, 0, ?, 'Reviewing design mocks'),
+        (10, 0, 1, ?, 'Looks awesome!');`,
+      [t1, t2],
+    );
+
+    const db = drizzle(sqlite, { schema }) as unknown as AppDatabase;
+
+    // 1. Exact match for "Design" should ONLY match "Design" (not "Design Team")
+    const exactDesign = await resolveTargetChat(db, "Design");
+    expect(exactDesign).not.toBeNull();
+    expect(exactDesign?.chatId).toBe(10);
+    expect(exactDesign?.subject).toBe("Design");
+    expect(exactDesign?.isGroup).toBe(true);
+
+    // Exact match is case-insensitive
+    const caseDesign = await resolveTargetChat(db, "design");
+    expect(caseDesign?.chatId).toBe(10);
+
+    // Non-existent exact match returns null without --fuzzy
+    const exactPartial = await resolveTargetChat(db, "Des");
+    expect(exactPartial).toBeNull();
+
+    // 2. Fuzzy match for "Des" returns both groups
+    const fuzzyMatches = await findMatchingChats(db, "Des", { fuzzy: true });
+    expect(fuzzyMatches.length).toBe(2);
+    expect(fuzzyMatches.map((m) => m.subject)).toEqual([
+      "Design",
+      "Design Team",
+    ]);
+
+    // 3. JID string matching
+    const jidMatch = await resolveTargetChat(db, "120363022222222222@g.us");
+    expect(jidMatch?.chatId).toBe(20);
+    expect(jidMatch?.subject).toBe("Design Team");
+
+    // 4. Scoped matching via allowedJidRowIds
+    const scopedMatch = await findMatchingChats(db, "Design", {
+      fuzzy: true,
+      allowedJidRowIds: new Set([2]),
+    });
+    expect(scopedMatch.length).toBe(1);
+    expect(scopedMatch[0]?.subject).toBe("Design Team");
+
+    // 5. Group chat export format verification with participant label and owner name
+    const exported = await exportChatMessages(db, exactDesign!, {});
+    expect(exported.messageCount).toBe(2);
+    expect(exported.text).toContain("Alex Designer: Reviewing design mocks");
+    expect(exported.text).toContain("Edwin: Looks awesome!");
+  });
 });

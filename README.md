@@ -363,11 +363,24 @@ wape links
 
 Exports formatted WhatsApp chat transcripts for a contact phone number, direct message chat, group, or username in the native WhatsApp copied format (`[DD/MM, HH:mm] Sender: Message`).
 
-By default, copies the transcript to your clipboard when run interactively, or streams the raw transcript directly to `stdout` when piped or redirected:
+By default, copies the transcript to your clipboard when run interactively, or streams the raw transcript directly to `stdout` when piped or redirected.
 
 ```bash
-# Export chat by phone number (copies to clipboard by default)
+# Interactively select from all group chats
+wape chats export
+
+# Filter interactive group picker to only groups in a specific room
+wape chats export --room Marketing
+
+# Search groups by name (auto-selects if 1 match, or filters interactive picker)
+wape chats export --group-search "Design" --room Marketing --since 3d
+
+# Export exact group or contact by name / phone (case-insensitive full match)
+wape chats export "Design Team"
 wape chats export 08076488738
+
+# Enable fuzzy/partial matching on target name or phone
+wape chats export "Design" --fuzzy
 
 # Stream directly to stdout when piped
 wape chats export 08076488738 | grep "curl"
