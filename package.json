@@ -21,6 +21,7 @@
     "wape": "bun run src/cli/index.ts",
     "scan": "bun run src/cli/index.ts scan",
     "rooms": "bun run src/cli/index.ts rooms",
+    "groups": "bun run src/cli/index.ts groups",
     "compare": "bun run src/cli/index.ts compare",
     "bundle": "bun run src/cli/index.ts bundle",
     "patch": "bun run src/cli/index.ts patch",

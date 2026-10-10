@@ -362,6 +362,7 @@ describe("Room Store and Management", () => {
     // Create a mock list file
     const oldPath = resolveListFilePath("test-room-1.txt");
     const newPath = resolveListFilePath("renamed-room-1.txt");
+    mkdirSync(join(oldPath, ".."), { recursive: true });
     writeFileSync(oldPath, "08031234567\n08091234567\n");
 
     const renameRes = renameRoomId("test-room-1", "renamed-room-1");
@@ -718,6 +719,9 @@ describe("Group and Community Extractor", () => {
     );
 
     const { rmSync, existsSync } = await import("node:fs");
+    // Verify lists folder is NOT created on disk
+    expect(existsSync(join(customHome, "lists"))).toBe(false);
+
     if (existsSync(customHome)) {
       rmSync(customHome, { recursive: true, force: true });
     }
@@ -1397,5 +1401,128 @@ describe("Chat Exporter & Search Service", () => {
       from: "2026-02-01",
     });
     expect(countSince).toBe(1);
+  });
+
+  it("formats and prints groups in standard community mode and ranked mode", async () => {
+    const { formatGroupLabel, printGroups } =
+      await import("../src/cli/room-manager");
+
+    const sampleGroups = [
+      {
+        jidRowId: 1,
+        jidString: "100@g.us",
+        subject: "Backend Devs",
+        groupType: 2,
+        communityName: "Tech Hub",
+        participantCount: 45,
+      },
+      {
+        jidRowId: 2,
+        jidString: "200@g.us",
+        subject: "Frontend Devs",
+        groupType: 2,
+        communityName: "Tech Hub",
+        participantCount: 150,
+      },
+      {
+        jidRowId: 3,
+        jidString: "300@g.us",
+        subject: "General Discussion",
+        groupType: 0,
+        communityName: null,
+        participantCount: 200,
+      },
+      {
+        jidRowId: 4,
+        jidString: "400@g.us",
+        subject: "Casual Hangout",
+        groupType: 0,
+        communityName: null,
+        participantCount: 10,
+      },
+    ];
+
+    // Check formatGroupLabel
+    const labelWithComm = formatGroupLabel(sampleGroups[0]!);
+    expect(labelWithComm).toContain("[🏛️ Tech Hub]");
+    expect(labelWithComm).toContain("Backend Devs");
+    expect(labelWithComm).toContain("(45 members)");
+
+    const labelStandalone = formatGroupLabel(sampleGroups[2]!);
+    expect(labelStandalone).toContain("[Standalone]");
+    expect(labelStandalone).toContain("General Discussion");
+    expect(labelStandalone).toContain("(200 members)");
+
+    // Capture console output
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      // 1. Standard mode
+      printGroups(sampleGroups);
+      const standardOutput = logs.join("\n");
+      expect(standardOutput).toContain("ACTIVE WHATSAPP GROUPS");
+      expect(standardOutput).toContain("Tech Hub");
+      expect(standardOutput).toContain("Backend Devs");
+      expect(standardOutput).toContain("Frontend Devs");
+      expect(standardOutput).toContain("Standalone Groups");
+      expect(standardOutput).toContain("General Discussion");
+
+      logs.length = 0;
+
+      // 2. Rank mode (should sort: General Discussion (200) -> Frontend Devs (150) -> Backend Devs (45) -> Casual Hangout (10))
+      printGroups(sampleGroups, { rank: true });
+      const rankOutput = logs.join("\n");
+      expect(rankOutput).toContain("RANKED WHATSAPP GROUPS");
+
+      const idxGen = rankOutput.indexOf("General Discussion");
+      const idxFront = rankOutput.indexOf("Frontend Devs");
+      const idxBack = rankOutput.indexOf("Backend Devs");
+      const idxCasual = rankOutput.indexOf("Casual Hangout");
+
+      expect(idxGen).toBeLessThan(idxFront);
+      expect(idxFront).toBeLessThan(idxBack);
+      expect(idxBack).toBeLessThan(idxCasual);
+
+      // Verify community names are still indicated in ranked mode
+      expect(rankOutput).toContain("[🏛️ Tech Hub]");
+      expect(rankOutput).toContain("[Standalone]");
+
+      logs.length = 0;
+
+      // 3. Room-scoped mode (standard and rank)
+      printGroups(sampleGroups.slice(0, 2), { roomId: "dev-team" });
+      const roomOutput = logs.join("\n");
+      expect(roomOutput).toContain("ACTIVE WHATSAPP GROUPS IN ROOM 'dev-team'");
+      expect(roomOutput).toContain("Tech Hub");
+      expect(roomOutput).toContain("Frontend Devs");
+
+      logs.length = 0;
+
+      printGroups(sampleGroups.slice(0, 2), { rank: true, roomId: "dev-team" });
+      const roomRankOutput = logs.join("\n");
+      expect(roomRankOutput).toContain(
+        "RANKED WHATSAPP GROUPS IN ROOM 'dev-team'",
+      );
+
+      logs.length = 0;
+
+      // 4. Empty groups
+      printGroups([]);
+      expect(logs.join("\n")).toContain("No active group chats found");
+
+      logs.length = 0;
+
+      // 5. Empty groups in room
+      printGroups([], { roomId: "empty-room" });
+      expect(logs.join("\n")).toContain(
+        "No active group chats found in room 'empty-room'",
+      );
+    } finally {
+      console.log = origLog;
+    }
   });
 });

@@ -144,11 +144,7 @@ export function getWapeDbFile(): string {
 }
 
 export function getWapeListsDir(): string {
-  const listsDir = join(getWapeDir(), "lists");
-  if (!existsSync(listsDir)) {
-    mkdirSync(listsDir, { recursive: true });
-  }
-  return listsDir;
+  return join(getWapeDir(), "lists");
 }
 
 export function getMainListPath(): string {

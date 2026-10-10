@@ -38,19 +38,128 @@ export function formatProvenanceGroupItem(group: ContactProvenanceGroup) {
   return `${comm}${group.subject}${extraInfo}`;
 }
 
-function formatGroupLabel(group: {
+export function formatGroupLabel(group: {
   subject: string;
   communityName: string | null;
   participantCount?: number;
 }): string {
   const countLabel =
     group.participantCount !== undefined
-      ? ` ${pc.dim(`(${group.participantCount} members)`)}`
+      ? ` ${pc.dim(`(${group.participantCount.toLocaleString()} members)`)}`
       : "";
   if (group.communityName) {
     return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject}${countLabel}`;
   }
   return `${pc.dim("[Standalone]")} • ${group.subject}${countLabel}`;
+}
+
+export function printGroups(
+  groups: GroupSummary[],
+  options?: { rank?: boolean; roomId?: string },
+): void {
+  if (groups.length === 0) {
+    const scopeMsg = options?.roomId
+      ? `No active group chats found in room '${options.roomId}'.`
+      : "No active group chats found.";
+    console.log(pc.yellow(`\n${scopeMsg}\n`));
+    return;
+  }
+
+  const roomSuffix = options?.roomId ? ` IN ROOM '${options.roomId}'` : "";
+
+  if (options?.rank) {
+    const ranked = [...groups].sort((a, b) => {
+      if (b.participantCount !== a.participantCount) {
+        return b.participantCount - a.participantCount;
+      }
+      return a.subject.localeCompare(b.subject, undefined, {
+        sensitivity: "base",
+      });
+    });
+
+    console.log(pc.cyan("\n" + "=".repeat(75)));
+    console.log(
+      pc.bold(
+        pc.cyan(
+          `🏆 RANKED WHATSAPP GROUPS${roomSuffix} (${ranked.length} total)`,
+        ),
+      ),
+    );
+    console.log("=".repeat(75) + "\n");
+
+    ranked.forEach((g, idx) => {
+      const num = pc.dim((idx + 1).toString().padStart(3, " ") + ".");
+      console.log(`  ${num} ${formatGroupLabel(g)}`);
+    });
+
+    console.log("\n" + "=".repeat(75) + "\n");
+    return;
+  }
+
+  console.log(pc.cyan("\n" + "=".repeat(75)));
+  console.log(
+    pc.bold(
+      pc.cyan(
+        `👥 ACTIVE WHATSAPP GROUPS${roomSuffix} (${groups.length} total)`,
+      ),
+    ),
+  );
+  console.log("=".repeat(75) + "\n");
+
+  const communityMap = new Map<string, GroupSummary[]>();
+  const standaloneItems: GroupSummary[] = [];
+
+  for (const g of groups) {
+    if (g.communityName) {
+      const list = communityMap.get(g.communityName) ?? [];
+      list.push(g);
+      communityMap.set(g.communityName, list);
+    } else {
+      standaloneItems.push(g);
+    }
+  }
+
+  const sortedCommunityNames = Array.from(communityMap.keys()).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" }),
+  );
+
+  let globalIndex = 1;
+
+  for (const commName of sortedCommunityNames) {
+    const commItems = communityMap.get(commName)!;
+    commItems.sort((a, b) =>
+      a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
+    );
+
+    console.log(`  ${pc.cyan(pc.bold(`🏛️  ${commName}`))}`);
+    for (const item of commItems) {
+      const num = pc.dim(globalIndex.toString().padStart(3, " ") + ".");
+      globalIndex++;
+      const countLabel = ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`;
+      console.log(`    ${num} └─ ${item.subject}${countLabel}`);
+    }
+    console.log("");
+  }
+
+  if (standaloneItems.length > 0) {
+    standaloneItems.sort((a, b) =>
+      a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
+    );
+
+    if (sortedCommunityNames.length > 0) {
+      console.log(`  ${pc.bold(pc.dim("🌐 Standalone Groups"))}`);
+    }
+
+    for (const item of standaloneItems) {
+      const num = pc.dim(globalIndex.toString().padStart(3, " ") + ".");
+      globalIndex++;
+      const countLabel = ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`;
+      console.log(`  ${num} ${item.subject}${countLabel}`);
+    }
+    console.log("");
+  }
+
+  console.log("=".repeat(75) + "\n");
 }
 
 export function printRoomsTable(rooms: Room[], groups?: GroupSummary[]): void {

@@ -41,6 +41,7 @@ import {
   addGroupsToRoomInteractive,
   createRoomInteractive,
   formatProvenanceGroupItem,
+  printGroups,
   printRoomDetail,
   printRoomGroups,
   printRoomsTable,
@@ -2412,6 +2413,79 @@ chatsCmd
 chatsCmd.action(() => {
   chatsCmd.outputHelp();
 });
+
+/**
+ * Groups Command
+ */
+program
+  .command("groups")
+  .alias("group")
+  .description(
+    "List all active WhatsApp group chats and their member counts, with optional ranking by member count",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .option(
+    "--rank",
+    "Sort and rank groups from highest to lowest member count regardless of community",
+  )
+  .option("--room <id>", "Filter groups to only those in the specified room")
+  .action(
+    async (options?: {
+      backup?: string;
+      key?: string;
+      rank?: boolean;
+      room?: string;
+    }) => {
+      try {
+        const { groups } = await loadDbAndGroups(options?.backup, options?.key);
+
+        if (groups.length === 0) {
+          console.log(pc.yellow("\nNo group chats found in the backup.\n"));
+          return;
+        }
+
+        let displayGroups = groups;
+        let roomId: string | undefined;
+
+        if (options?.room) {
+          const cleanRoomId = options.room.trim().toLowerCase();
+          const room = getRoomById(cleanRoomId);
+          if (!room) {
+            console.error(
+              pc.red(
+                `\n❌ Error: Room '${options.room}' not found. Use 'wape rooms list' to see all rooms.\n`,
+              ),
+            );
+            process.exit(1);
+          }
+          roomId = room.id;
+          const resolved = resolveRoomGroups(room, groups);
+          const activeRowIds = new Set(resolved.activeJidRowIds);
+          const activeJids = new Set(
+            resolved.activeJidStrings.map((j) => j.toLowerCase()),
+          );
+          displayGroups = groups.filter(
+            (g) =>
+              activeRowIds.has(g.jidRowId) ||
+              activeJids.has(g.jidString.toLowerCase()),
+          );
+        }
+
+        printGroups(displayGroups, { rank: options?.rank, roomId });
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
 
 /**
  * Lists overview

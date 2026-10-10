@@ -147,7 +147,30 @@ wape rooms scan --lock
 
 ---
 
-### 3. Group & Room Scanning (`wape scan`)
+### 4. Groups & Ranking (`wape groups`)
+
+List all active WhatsApp group chats and their member counts, organized by community or ranked globally by membership:
+
+```bash
+# List all active WhatsApp groups grouped by community with member counts
+wape groups
+
+# Rank all groups from most to least members regardless of community
+wape groups --rank
+
+# Filter groups to a specific configured room
+wape groups --room <room-id>
+
+# Rank groups within a specific room by member count
+wape groups --room <room-id> --rank
+
+# Specify custom backup or key
+wape groups --backup /path/to/backup.crypt15 --key <hex-key>
+```
+
+---
+
+### 5. Group & Room Scanning (`wape scan`)
 
 Extracts and sieves unique Nigerian phone numbers from selected groups or configured rooms with live search and community nesting.
 
@@ -169,7 +192,7 @@ wape scan --include-ignored
 
 ---
 
-### 4. Ignored Groups Management (`wape ignore`, `wape ignored`, `wape unignore`)
+### 6. Ignored Groups Management (`wape ignore`, `wape ignored`, `wape unignore`)
 
 Mark personal, family, or irrelevant WhatsApp groups as ignored to prevent them from ever being added to any room (`wape rooms new`, `wape rooms add`) or appearing in ad-hoc scans (`wape scan`). Ignored groups are stored persistently by WhatsApp JID in `~/.wape/ignored-groups.json`.
 
@@ -187,7 +210,7 @@ wape unignore
 
 ---
 
-### 5. One-Off Databases & Keys (`wape oneoff`)
+### 7. One-Off Databases & Keys (`wape oneoff`)
 
 Scan temporary or one-off WhatsApp backup databases using a dedicated one-off decryption key without touching or overwriting `config.json`. The `--key` (`-k`) option is required, while `--backup` (`-b`) is optional (falls back to auto-discovery if omitted).
 
@@ -206,7 +229,7 @@ wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
 
 ---
 
-### 6. Compare Contacts (Intersection) (`wape compare`)
+### 8. Compare Contacts (Intersection) (`wape compare`)
 
 Finds contacts present in ALL target lists, rooms, or vCard (`.vcf`) files, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more targets simultaneously.
 
@@ -229,7 +252,7 @@ wape compare contacts.vcf my-room
 
 ---
 
-### 7. Bundle Contacts & Group Links (`wape bundle`)
+### 9. Bundle Contacts & Group Links (`wape bundle`)
 
 Performs a general room scan of all configured rooms to update their contact lists, compares the target rooms or lists to filter down strictly to **newly discovered common contacts**, extracts all **new WhatsApp group invite links** from the backup database, prints only the new items to the terminal, and copies both together to your clipboard in a single step.
 
@@ -247,7 +270,7 @@ wape bundle
 
 ---
 
-### 8. Stats & Union Breakdown (`wape stats`)
+### 10. Stats & Union Breakdown (`wape stats`)
 
 Computes aggregated stats totals across lists and rooms:
 
@@ -272,7 +295,7 @@ wape stats <target1> <target2> <target3>
 
 ---
 
-### 9. Patch & Import Contacts (`wape patch`)
+### 11. Patch & Import Contacts (`wape patch`)
 
 Import and merge contacts from external text or vCard (`.vcf`) file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
@@ -289,7 +312,7 @@ wape patch <target> contacts.vcf extra.txt
 
 ---
 
-### 10. Unpatch & Remove Contacts (`wape unpatch`)
+### 12. Unpatch & Remove Contacts (`wape unpatch`)
 
 Remove contacts present in external text or vCard (`.vcf`) file(s) from global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
 
@@ -306,7 +329,7 @@ wape unpatch <target> contacts.vcf
 
 ---
 
-### 11. Print Contacts (`wape print`)
+### 13. Print Contacts (`wape print`)
 
 Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
 
@@ -316,7 +339,7 @@ wape print <target>
 
 ---
 
-### 12. Contact Lists Repository (`wape lists`)
+### 14. Contact Lists Repository (`wape lists`)
 
 Shows all contact list files currently managed in the active lists directory and their contact counts.
 
@@ -326,7 +349,7 @@ wape lists
 
 ---
 
-### 13. WhatsApp Group Links Extractor (`wape links`)
+### 15. WhatsApp Group Links Extractor (`wape links`)
 
 Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, automatically records newly found links into `links.json`, prints them one per line to the terminal, and copies them to your clipboard.
 
@@ -336,7 +359,7 @@ wape links
 
 ---
 
-### 14. Chat Transcript Export (`wape chats export`)
+### 16. Chat Transcript Export (`wape chats export`)
 
 Exports formatted WhatsApp chat transcripts for a contact phone number, direct message chat, group, or username in the native WhatsApp copied format (`[DD/MM, HH:mm] Sender: Message`).
 
@@ -357,7 +380,7 @@ wape chats export 08076488738 --to 2026-02-01
 wape chats export 08076488738 --last-month
 ```
 
-### 15. Chat Links Filtering (`wape chats links`)
+### 17. Chat Links Filtering (`wape chats links`)
 
 Filters through messages across all chats to extract WhatsApp group invite links, supporting optional `--since`, `--from`, `--to`, `--last`, and `--count` flags. By default, prints the links and copies them to the clipboard. When piped or redirected, streams the raw links directly to `stdout` without copying to the clipboard:
 
@@ -383,7 +406,7 @@ wape chats links --from 2026-01-01 --to 2026-03-31
 wape chats links --since 1w | sort -u
 ```
 
-### 16. Message Origin Search (`wape chats search`)
+### 18. Message Origin Search (`wape chats search`)
 
 Searches across all WhatsApp groups and chats for messages matching a keyword or URL pattern (ideal for finding WhatsApp group invite links). Displays the group name, sender name/phone, timestamp, and message text:
 
@@ -413,4 +436,3 @@ Directory structure:
 
 - **`wape.db`**: Embedded SQLite database containing all contact indexes, list memberships, room definitions, group mappings, provenance relations, saved links, and comparisons.
 - **`config.json`**: Global environment configuration (decryption key, backup path, and default comparison rooms).
-- **`lists/`**: Plain-text exports for global (`main.txt`, `lock.txt`) and room-level (`<id>.txt`) contact list files.
