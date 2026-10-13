@@ -824,6 +824,181 @@ describe("Group and Community Extractor", () => {
     expect(numbers.has("+2348044444444")).toBe(true);
   });
 
+  it("audits group demographics and flags groups where non-Nigerian contacts exceed 50% of total members", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { auditGroupDemographics } =
+      await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT NOT NULL, server TEXT NOT NULL, agent INTEGER, device INTEGER, type INTEGER, raw_string TEXT);
+      CREATE TABLE jid_map (lid_row_id INTEGER PRIMARY KEY, jid_row_id INTEGER NOT NULL, sort_id INTEGER);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER UNIQUE, subject TEXT, group_type INTEGER, hidden INTEGER, archived INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER, pending INTEGER, add_timestamp INTEGER);
+      CREATE TABLE group_past_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL);
+    `);
+
+    // Insert phone JIDs:
+    // Nigerian numbers:
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (1, '2348011111111', 's.whatsapp.net')`,
+    );
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (2, '2348022222222', 's.whatsapp.net')`,
+    );
+    // Foreign (non-Nigerian) numbers:
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (3, '14155552671', 's.whatsapp.net')`,
+    ); // US
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (4, '447911123456', 's.whatsapp.net')`,
+    ); // UK
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (5, '233201234567', 's.whatsapp.net')`,
+    ); // Ghana
+    // LID without mapping (hidden phone):
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (6, '999888777666', 'lid')`,
+    );
+
+    // Group 101: 1 Nigerian (user 1), 3 Foreign (user 3, 4, 5). Total: 4 members.
+    // Non-Nigerian = 3 / 4 = 75% -> FLAGGED
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (101, 1), (101, 3), (101, 4), (101, 5)`,
+    );
+
+    // Group 102: 2 Nigerian (user 1, 2), 1 Foreign (user 3), 1 Hidden LID (user 6). Total: 4 members.
+    // Non-Nigerian = 1 / 4 = 25% -> NOT FLAGGED
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (102, 1), (102, 2), (102, 3), (102, 6)`,
+    );
+
+    const db = drizzle({ client: sqlite, schema });
+
+    const auditResults = await auditGroupDemographics(
+      db,
+      [
+        {
+          jidRowId: 101,
+          subject: "Foreign Majority Group",
+          communityName: "International",
+        },
+        {
+          jidRowId: 102,
+          subject: "Nigerian Majority Group",
+          communityName: null,
+        },
+      ],
+      50,
+    );
+
+    expect(auditResults.length).toBe(2);
+
+    const g101 = auditResults.find((g) => g.groupJidRowId === 101)!;
+    expect(g101).toBeDefined();
+    expect(g101.totalMembers).toBe(4);
+    expect(g101.nigerianCount).toBe(1);
+    expect(g101.nonNigerianCount).toBe(3);
+    expect(g101.unmappedCount).toBe(0);
+    expect(g101.nonNigerianPercentage).toBe(75);
+    expect(g101.isFlagged).toBe(true);
+
+    const g102 = auditResults.find((g) => g.groupJidRowId === 102)!;
+    expect(g102).toBeDefined();
+    expect(g102.totalMembers).toBe(4);
+    expect(g102.nigerianCount).toBe(2);
+    expect(g102.nonNigerianCount).toBe(1);
+    expect(g102.unmappedCount).toBe(1);
+    expect(g102.nonNigerianPercentage).toBe(25);
+    expect(g102.isFlagged).toBe(false);
+
+    // Custom threshold test (e.g. threshold = 20)
+    const customAudit = await auditGroupDemographics(
+      db,
+      [{ jidRowId: 102, subject: "Nigerian Majority Group" }],
+      20,
+    );
+    expect(customAudit[0]?.isFlagged).toBe(true); // 25% > 20%
+  });
+
+  it("filters out exited groups from demographic audit", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { auditGroupDemographics, getExitedGroupJids } =
+      await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT NOT NULL, server TEXT NOT NULL, agent INTEGER, device INTEGER, type INTEGER, raw_string TEXT);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER UNIQUE, subject TEXT, group_type INTEGER, hidden INTEGER, archived INTEGER, participation_status INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER, pending INTEGER, add_timestamp INTEGER);
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER NOT NULL, from_me INTEGER, text_data TEXT, timestamp INTEGER);
+      CREATE TABLE message_system (message_row_id INTEGER PRIMARY KEY, action_type INTEGER);
+    `);
+
+    // JIDs:
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (1, '2348011111111', 's.whatsapp.net')`,
+    );
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (2, '14155552671', 's.whatsapp.net')`,
+    );
+
+    // Group 201: Active group (participation_status = 2)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (1, 201, 'Active Group', 2)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (201, 1), (201, 2)`,
+    );
+
+    // Group 202: Exited group via participation_status = 3
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (2, 202, 'Exited Status Group', 3)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (202, 2)`,
+    );
+
+    // Group 203: Exited group via message_system action_type = 5 (from_me = 1)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (3, 203, 'Exited Message Group', 2)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id) VALUES (203, 2)`,
+    );
+    sqlite.run(
+      `INSERT INTO message (_id, chat_row_id, from_me) VALUES (10, 3, 1)`,
+    );
+    sqlite.run(
+      `INSERT INTO message_system (message_row_id, action_type) VALUES (10, 5)`,
+    );
+
+    const db = drizzle({ client: sqlite, schema });
+
+    const exitedSet = getExitedGroupJids(db, [201, 202, 203]);
+    expect(exitedSet.has(201)).toBe(false);
+    expect(exitedSet.has(202)).toBe(true);
+    expect(exitedSet.has(203)).toBe(true);
+
+    const auditResults = await auditGroupDemographics(
+      db,
+      [
+        { jidRowId: 201, subject: "Active Group" },
+        { jidRowId: 202, subject: "Exited Status Group" },
+        { jidRowId: 203, subject: "Exited Message Group" },
+      ],
+      50,
+    );
+
+    // Only active group 201 should be returned in demographic audit
+    expect(auditResults.length).toBe(1);
+    expect(auditResults[0]?.groupJidRowId).toBe(201);
+  });
+
   it("silently migrates legacy group rowIds to unique WhatsApp JIDs when reliably resolvable", async () => {
     const { resolveRoomGroups } = await import("../src/services/extractor");
     const { getRoomById, saveRoom } =

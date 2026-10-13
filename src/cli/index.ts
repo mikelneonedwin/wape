@@ -9,10 +9,12 @@ import { getDatabase } from "../db";
 import { ensureDecryptedDatabase } from "../services/decryptor";
 import { copyToClipboard } from "../services/clipboard";
 import {
+  auditGroupDemographics,
   detectWhatsAppOwnerPhone,
   extractNigerianNumbersWithGroupMapping,
   extractWhatsAppGroupLinks,
   fetchAllGroups,
+  getExitedGroupJids,
   resolveRoomGroups,
   type GroupSummary,
 } from "../services/extractor";
@@ -45,6 +47,7 @@ import {
   createRoomInteractive,
   formatProvenanceGroupItem,
   printGroups,
+  printRoomAudit,
   printRoomDetail,
   printRoomGroups,
   printRoomsTable,
@@ -696,6 +699,218 @@ oneoffCmd
     }
   });
 
+oneoffCmd
+  .command("bundle [targets...]")
+  .description(
+    "Scan groups from a one-off WhatsApp backup into a list/room, run comparison across default rooms, extract newly found group invite links, and copy both to clipboard",
+  )
+  .requiredOption(
+    "-k, --key <key>",
+    "Decryption key for the one-off backup (required)",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
+  )
+  .option(
+    "-l, --label <label>",
+    "Label for this one-off backup (e.g. Alice - Work Phone)",
+  )
+  .option(
+    "-t, --target-list <nameOrPath>",
+    "Direct output to a specific list file or name",
+  )
+  .option("--main", "Force output to global main list")
+  .option("--lock", "Force output to global lock list")
+  .action(
+    async (
+      targets?: string[],
+      options?: {
+        key: string;
+        backup?: string;
+        label?: string;
+        targetList?: string;
+        main?: boolean;
+        lock?: boolean;
+      },
+    ) => {
+      try {
+        console.log(pc.cyan("\n📱 wape - One-Off WhatsApp Backup Bundle\n"));
+        console.log(
+          pc.dim("Decrypting / preparing one-off SQLite database..."),
+        );
+        const { db, groups } = await loadDbAndGroups(
+          options?.backup,
+          options?.key,
+        );
+
+        if (groups.length === 0) {
+          console.log(pc.yellow("No group chats found in the backup."));
+          return;
+        }
+
+        const detectedOwner = await detectWhatsAppOwnerPhone(db);
+        let backupLabel = options?.label?.trim();
+        if (!backupLabel) {
+          const ownerPromptText = detectedOwner
+            ? ` (detected owner: ${formatPhoneNumber(detectedOwner)})`
+            : "";
+          backupLabel = await input({
+            message: `Enter a label for this one-off backup${ownerPromptText}:`,
+            validate: (val) =>
+              val.trim() ? true : "Backup label cannot be empty.",
+          });
+        }
+
+        let forcedList: string | undefined;
+        if (options?.targetList) {
+          forcedList = normalizeListName(options.targetList);
+        } else if (options?.main) {
+          forcedList = "main";
+        } else if (options?.lock) {
+          forcedList = "lock";
+        }
+
+        const targetJids = await searchCheckbox({
+          message:
+            "Select group chats (Type to filter, Space to check, Enter to submit):",
+          pageSize: 16,
+          required: true,
+          choices: groups.map((g) => ({
+            name: formatGroupLabel(g),
+            value: g.jidRowId,
+            category: g.communityName ?? "Standalone Groups",
+          })),
+        });
+
+        const selectedGroups = groups.filter((g) =>
+          targetJids.includes(g.jidRowId),
+        );
+        const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
+
+        await executeGroupExport(db, targetJids, selectedLabels, {
+          forcedTargetList: forcedList,
+          scanType: "oneoff",
+          sourceLabel: backupLabel.trim(),
+          ownerPhone: detectedOwner,
+          allGroups: groups,
+        });
+
+        // Resolve targets for comparison
+        let resolvedTargets: { label: string; filePath: string }[] = [];
+        if (!targets || targets.length === 0) {
+          const cfg = getAppConfig();
+          if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
+            resolvedTargets = cfg.defaultCompareRooms.map((t) =>
+              resolveTargetToList(t),
+            );
+          } else {
+            const allRooms = getRooms();
+            if (allRooms.length >= 2) {
+              resolvedTargets = allRooms.map((r) => {
+                const listName = r.targetList
+                  ? normalizeListName(r.targetList)
+                  : r.id;
+                return {
+                  label: `Room '${r.id}'`,
+                  filePath: listName,
+                };
+              });
+            } else {
+              resolvedTargets = [
+                {
+                  label: "Main List",
+                  filePath: "main",
+                },
+                {
+                  label: "Lock List",
+                  filePath: "lock",
+                },
+              ];
+            }
+          }
+        } else if (targets.length === 1) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Please provide at least two targets to compare.\n`,
+            ),
+          );
+          process.exit(1);
+        } else {
+          resolvedTargets = targets.map((t) => resolveTargetToList(t));
+        }
+
+        console.log(
+          pc.cyan(
+            `\n🔍 Running comparison across: ${resolvedTargets.map((t) => t.label).join(", ")}...\n`,
+          ),
+        );
+
+        // 1. Calculate comparison diff across targets
+        const filePaths = resolvedTargets.map((t) => t.filePath);
+        const diff = getComparisonDiff(filePaths);
+        const newContacts = diff.newContacts;
+
+        // 2. Extract new group invite links from one-off backup database
+        const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+        const recordedLinks = new Set(getSavedLinks());
+        const newLinks = allExtractedLinks.filter(
+          (link) => !recordedLinks.has(link),
+        );
+
+        const formattedNewContacts = newContacts.map(
+          (contact) => `${formatPhoneNumber(contact)}  [NEW]`,
+        );
+
+        for (const contactLine of formattedNewContacts) {
+          console.log(contactLine);
+        }
+
+        for (const link of newLinks) {
+          console.log(link);
+        }
+
+        const clipboardItems = [...formattedNewContacts, ...newLinks];
+        let copied = false;
+        if (clipboardItems.length > 0) {
+          copied = await copyToClipboard(clipboardItems.join("\n"));
+        }
+
+        saveNotedComparison(filePaths, diff.currentCommon);
+        if (newLinks.length > 0) {
+          saveLinks(newLinks);
+        }
+
+        if (clipboardItems.length === 0) {
+          console.log(
+            pc.yellow(
+              "\nNo new common contacts or new WhatsApp group invite links found.\n",
+            ),
+          );
+        } else if (copied) {
+          const parts: string[] = [];
+          if (newContacts.length > 0) {
+            parts.push(`${newContacts.length.toLocaleString()} new contact(s)`);
+          }
+          if (newLinks.length > 0) {
+            parts.push(`${newLinks.length.toLocaleString()} new group link(s)`);
+          }
+          console.log(
+            pc.dim(`\n📋 Copied ${parts.join(" and ")} to clipboard.\n`),
+          );
+        }
+        process.exit(0);
+      } catch (error) {
+        console.error(
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        process.exit(1);
+      }
+    },
+  );
+
 /**
  * Room Management Commands
  */
@@ -818,6 +1033,128 @@ roomCmd
       process.exit(1);
     }
   });
+
+async function executeRoomAudit(
+  id?: string,
+  options?: {
+    threshold?: string;
+    backup?: string;
+    key?: string;
+    all?: boolean;
+  },
+) {
+  try {
+    const rooms = getRooms();
+    if (rooms.length === 0) {
+      console.log(
+        pc.yellow(
+          "\nNo rooms found. Use 'wape rooms new <id>' to create one.\n",
+        ),
+      );
+      return;
+    }
+
+    let room: Room | null = null;
+    if (id) {
+      room = getRoomById(id);
+      if (!room) {
+        console.error(
+          pc.red(
+            `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+          ),
+        );
+        process.exit(1);
+      }
+    } else {
+      const pickedRoomId = await select<string>({
+        message: "Select room to audit:",
+        choices: rooms.map((r) => {
+          const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+          return {
+            name: `${r.id} ${pc.dim(`(${count} groups)`)}`,
+            value: r.id,
+          };
+        }),
+      });
+      room = getRoomById(pickedRoomId);
+    }
+
+    if (!room) return;
+
+    const threshold = parseFloat(options?.threshold ?? "50") || 50;
+    const { db, groups } = await loadDbAndGroups(options?.backup, options?.key);
+
+    const resolved = resolveRoomGroups(room, groups);
+    const activeCandidates = resolved.resolvedItems.filter(
+      (
+        item,
+      ): item is typeof item & {
+        resolvedJidRowId: number;
+      } => !item.isMissing && item.resolvedJidRowId !== null,
+    );
+
+    const exitedJids = getExitedGroupJids(
+      db,
+      activeCandidates.map((c) => c.resolvedJidRowId),
+    );
+
+    const activeGroups = activeCandidates
+      .filter((item) => !exitedJids.has(item.resolvedJidRowId))
+      .map((item) => ({
+        jidRowId: item.resolvedJidRowId,
+        subject: item.subject,
+        communityName: item.communityName,
+      }));
+
+    const missingItems = resolved.resolvedItems.filter(
+      (item) => item.isMissing,
+    );
+    const demographics = await auditGroupDemographics(
+      db,
+      activeGroups,
+      threshold,
+      { filterExited: false },
+    );
+
+    printRoomAudit(
+      room,
+      demographics,
+      missingItems,
+      threshold,
+      options?.all ?? false,
+      exitedJids.size,
+    );
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+roomCmd
+  .command("audit [id]")
+  .description(
+    "Audit WhatsApp groups in a room for non-Nigerian demographic majority (>50%)",
+  )
+  .option(
+    "-t, --threshold <percent>",
+    "Non-Nigerian percentage threshold (default: 50)",
+    "50",
+  )
+  .option(
+    "-a, --all",
+    "Show all groups in the room, including non-flagged ones",
+    false,
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(executeRoomAudit);
 
 roomCmd
   .command("new <id>")
@@ -2632,6 +2969,31 @@ program
       }
     },
   );
+
+/**
+ * Room Audit Command
+ */
+program
+  .command("audit [id]")
+  .description(
+    "Audit WhatsApp groups in a room for non-Nigerian demographic majority (>50%)",
+  )
+  .option(
+    "-t, --threshold <percent>",
+    "Non-Nigerian percentage threshold (default: 50)",
+    "50",
+  )
+  .option(
+    "-a, --all",
+    "Show all groups in the room, including non-flagged ones",
+    false,
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(executeRoomAudit);
 
 /**
  * Lists overview

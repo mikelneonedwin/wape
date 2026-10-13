@@ -1,6 +1,11 @@
 import { select } from "@inquirer/prompts";
 import pc from "picocolors";
-import { resolveRoomGroups, type GroupSummary } from "../services/extractor";
+import {
+  resolveRoomGroups,
+  type GroupDemographics,
+  type GroupSummary,
+  type ResolvedRoomGroupItem,
+} from "../services/extractor";
 import {
   getListContactCount,
   getIgnoredJidSet,
@@ -336,6 +341,114 @@ export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
     }
     console.log("");
   }
+}
+
+export function printRoomAudit(
+  room: Room,
+  demographics: GroupDemographics[],
+  missingItems: ResolvedRoomGroupItem[] = [],
+  thresholdPercent = 50,
+  showAll = false,
+  exitedCount = 0,
+): void {
+  const flagged = demographics.filter((d) => d.isFlagged);
+  console.log(pc.cyan("\n" + "=".repeat(75)));
+  console.log(
+    pc.bold(
+      pc.cyan(
+        `🔍 ROOM DEMOGRAPHICS AUDIT: ${room.id.toUpperCase()} (Threshold: > ${thresholdPercent}% Non-Nigerian)`,
+      ),
+    ),
+  );
+  console.log("=".repeat(75));
+  console.log(`${pc.bold("Room ID:")}           ${pc.yellow(room.id)}`);
+  const exitedNote =
+    exitedCount > 0 ? ` ${pc.dim(`(${exitedCount} exited skipped)`)}` : "";
+  console.log(
+    `${pc.bold("Active Groups:")}     ${pc.white(demographics.length.toString())}${exitedNote}`,
+  );
+  const flaggedBadge =
+    flagged.length > 0
+      ? pc.bold(pc.red(`🚩 ${flagged.length} group(s)`))
+      : pc.bold(pc.green("0 groups (None)"));
+  console.log(`${pc.bold("Flagged Groups:")}    ${flaggedBadge}`);
+  console.log("-".repeat(75));
+
+  const itemsToDisplay = showAll ? demographics : flagged;
+  const sectionTitle = showAll
+    ? "📊 GROUP BREAKDOWN:"
+    : `🚩 FLAGGED GROUPS (>${thresholdPercent}% Non-Nigerian):`;
+  console.log(pc.bold(pc.cyan(sectionTitle)));
+
+  if (itemsToDisplay.length === 0) {
+    if (showAll) {
+      console.log(pc.dim("  (No groups found in this room)"));
+    } else {
+      console.log(
+        pc.green(
+          `\n  ✅ None! All active groups in this room have ≤ ${thresholdPercent}% non-Nigerian members.`,
+        ),
+      );
+    }
+  } else {
+    itemsToDisplay.forEach((item, idx) => {
+      const num = pc.dim((idx + 1).toString().padStart(2, " ") + ".");
+      const flagSymbol = item.isFlagged
+        ? pc.bold(pc.red("🚩 [FLAGGED]"))
+        : pc.bold(pc.green("✅ [OK]     "));
+
+      const commLabel = item.communityName
+        ? `${pc.cyan(`[🏛️ ${item.communityName}]`)} └─ `
+        : `${pc.dim("[Standalone]")} • `;
+
+      console.log(
+        `\n  ${num} ${flagSymbol} ${commLabel}${pc.bold(item.subject)} ${pc.dim(`(${item.totalMembers.toLocaleString()} members)`)}`,
+      );
+      console.log(
+        `      ${pc.dim("Demographics:")} Non-Nigerian: ${pc.yellow(item.nonNigerianCount.toLocaleString())} (${pc.yellow(`${item.nonNigerianPercentage}%`)}) | ` +
+          `Nigerian: ${pc.green(item.nigerianCount.toLocaleString())} | ` +
+          `Hidden/LID: ${pc.dim(item.unmappedCount.toLocaleString())}`,
+      );
+      if (item.isFlagged) {
+        console.log(
+          `      ${pc.dim("Status:")}       ${pc.red(pc.bold(`Exceeds threshold (${item.nonNigerianPercentage}% > ${thresholdPercent}%)`))}`,
+        );
+      } else {
+        console.log(
+          `      ${pc.dim("Status:")}       ${pc.green(`Within threshold (${item.nonNigerianPercentage}% ≤ ${thresholdPercent}%)`)}`,
+        );
+      }
+    });
+  }
+
+  if (showAll && missingItems.length > 0) {
+    console.log(pc.dim("\n  Missing / Exited Groups:"));
+    missingItems.forEach((item) => {
+      console.log(
+        `    ${pc.red("[⚠️ MISSING]")} ${pc.dim(item.subject)} ${pc.dim(`(ID: ${item.id})`)}`,
+      );
+    });
+  }
+
+  console.log("\n" + "=".repeat(75));
+  if (flagged.length > 0) {
+    console.log(
+      pc.red(
+        pc.bold(
+          `⚠️  Audit complete: ${flagged.length} of ${demographics.length} active groups exceed the ${thresholdPercent}% non-Nigerian threshold.`,
+        ),
+      ),
+    );
+  } else {
+    console.log(
+      pc.green(
+        pc.bold(
+          `✅ Audit complete: All active groups in this room are within the Nigerian demographic threshold (≤ ${thresholdPercent}% non-Nigerian).`,
+        ),
+      ),
+    );
+  }
+  console.log("=".repeat(75) + "\n");
 }
 
 export async function createRoomInteractive(

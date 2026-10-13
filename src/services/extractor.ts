@@ -715,3 +715,209 @@ export async function extractWhatsAppGroupLinks(
 
   return Array.from(uniqueLinks).sort((a, b) => a.localeCompare(b));
 }
+
+export interface GroupDemographics {
+  groupJidRowId: number;
+  subject: string;
+  communityName: string | null;
+  totalMembers: number;
+  nigerianCount: number;
+  nonNigerianCount: number;
+  unmappedCount: number;
+  nonNigerianPercentage: number;
+  isFlagged: boolean;
+}
+
+/**
+ * Detects which group JID row IDs have been exited by the account owner.
+ * Checks chat.participation_status = 3 and message_system action_type = 5 (from_me = 1).
+ */
+export function getExitedGroupJids(
+  db: AppDatabase,
+  groupJidRowIds: number[],
+): Set<number> {
+  const exited = new Set<number>();
+  if (groupJidRowIds.length === 0) return exited;
+  const placeholders = groupJidRowIds.map(() => "?").join(",");
+
+  try {
+    const rows = db.$client
+      .query<{ jidRowId: number }, number[]>(
+        `SELECT jid_row_id as jidRowId FROM chat WHERE participation_status = 3 AND jid_row_id IN (${placeholders})`,
+      )
+      .all(...groupJidRowIds);
+    for (const r of rows) {
+      if (r.jidRowId) exited.add(r.jidRowId);
+    }
+  } catch {
+    // Graceful fallback if participation_status column does not exist
+  }
+
+  try {
+    const rows = db.$client
+      .query<{ jidRowId: number }, number[]>(
+        `SELECT DISTINCT c.jid_row_id as jidRowId 
+         FROM message_system ms 
+         JOIN message m ON ms.message_row_id = m._id 
+         JOIN chat c ON m.chat_row_id = c._id 
+         WHERE ms.action_type = 5 AND m.from_me = 1 AND c.jid_row_id IN (${placeholders})`,
+      )
+      .all(...groupJidRowIds);
+    for (const r of rows) {
+      if (r.jidRowId) exited.add(r.jidRowId);
+    }
+  } catch {
+    // Graceful fallback if message_system table does not exist
+  }
+
+  return exited;
+}
+
+/**
+ * Audits group participant demographics for a set of WhatsApp groups.
+ * Flags any group where the non-Nigerian contact count exceeds the specified threshold percentage of total members.
+ * By default, automatically filters out groups that have been exited by the account owner.
+ */
+export async function auditGroupDemographics(
+  db: AppDatabase,
+  groups: {
+    jidRowId: number;
+    subject: string;
+    communityName?: string | null;
+  }[],
+  thresholdPercent = 50,
+  options?: { filterExited?: boolean },
+): Promise<GroupDemographics[]> {
+  let targetGroups = groups;
+  if (options?.filterExited !== false) {
+    const exitedJids = getExitedGroupJids(
+      db,
+      groups.map((g) => g.jidRowId),
+    );
+    targetGroups = groups.filter((g) => !exitedJids.has(g.jidRowId));
+  }
+
+  if (targetGroups.length === 0) return [];
+
+  const groupStatsMap = new Map<
+    number,
+    {
+      total: number;
+      nigerian: number;
+      nonNigerian: number;
+      unmapped: number;
+    }
+  >();
+
+  for (const g of targetGroups) {
+    groupStatsMap.set(g.jidRowId, {
+      total: 0,
+      nigerian: 0,
+      nonNigerian: 0,
+      unmapped: 0,
+    });
+  }
+
+  const groupJidRowIds = targetGroups.map((g) => g.jidRowId);
+  const sqliteDb = db.$client;
+  const placeholders = groupJidRowIds.map(() => "?").join(",");
+
+  const query = `
+    SELECT 
+      gpu.group_jid_row_id as groupJidRowId,
+      j.user as user,
+      j.server as server,
+      pj.user as phoneUser,
+      pj.server as phoneServer
+    FROM group_participant_user gpu
+    LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
+    LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
+    LEFT JOIN jid pj ON jm.jid_row_id = pj._id
+    WHERE gpu.group_jid_row_id IN (${placeholders})
+  `;
+
+  let rows: {
+    groupJidRowId: number;
+    user: string | null;
+    server: string | null;
+    phoneUser: string | null;
+    phoneServer: string | null;
+  }[] = [];
+
+  try {
+    rows = sqliteDb.query(query).all(...groupJidRowIds) as typeof rows;
+  } catch {
+    // Fallback if jid_map is not available in legacy schema
+    const fallbackQuery = `
+      SELECT 
+        gpu.group_jid_row_id as groupJidRowId,
+        j.user as user,
+        j.server as server,
+        NULL as phoneUser,
+        NULL as phoneServer
+      FROM group_participant_user gpu
+      LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
+      WHERE gpu.group_jid_row_id IN (${placeholders})
+    `;
+    try {
+      rows = sqliteDb
+        .query(fallbackQuery)
+        .all(...groupJidRowIds) as typeof rows;
+    } catch (err) {
+      console.error("Demographic audit query failed:", err);
+    }
+  }
+
+  for (const row of rows) {
+    const stats = groupStatsMap.get(row.groupJidRowId);
+    if (!stats) continue;
+
+    stats.total++;
+
+    let candidateNumber: string | null = null;
+    if (row.server === "s.whatsapp.net" && row.user) {
+      candidateNumber = row.user;
+    } else if (row.phoneServer === "s.whatsapp.net" && row.phoneUser) {
+      candidateNumber = row.phoneUser;
+    }
+
+    if (candidateNumber) {
+      const isNigerian = normalizeNigerianPhoneNumber(candidateNumber) !== null;
+      if (isNigerian) {
+        stats.nigerian++;
+      } else {
+        const digits = candidateNumber.replace(/\D/g, "");
+        if (digits.length >= 7 && digits.length <= 15) {
+          stats.nonNigerian++;
+        } else {
+          stats.unmapped++;
+        }
+      }
+    } else {
+      stats.unmapped++;
+    }
+  }
+
+  return targetGroups.map((g) => {
+    const stats = groupStatsMap.get(g.jidRowId) ?? {
+      total: 0,
+      nigerian: 0,
+      nonNigerian: 0,
+      unmapped: 0,
+    };
+    const pct = stats.total > 0 ? (stats.nonNigerian / stats.total) * 100 : 0;
+    const roundedPct = Number(pct.toFixed(1));
+
+    return {
+      groupJidRowId: g.jidRowId,
+      subject: g.subject,
+      communityName: g.communityName ?? null,
+      totalMembers: stats.total,
+      nigerianCount: stats.nigerian,
+      nonNigerianCount: stats.nonNigerian,
+      unmappedCount: stats.unmapped,
+      nonNigerianPercentage: roundedPct,
+      isFlagged: pct > thresholdPercent,
+    };
+  });
+}

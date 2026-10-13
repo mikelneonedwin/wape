@@ -225,6 +225,10 @@ wape oneoff scan -k <64-char-hex-key> --lock
 
 # Extract group invite links from a one-off backup
 wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
+
+# One-off bundle: scan groups into a list/room, run comparison across default rooms, extract invite links, and copy both
+wape oneoff bundle -k <64-char-hex-key> -b /path/to/one-off.crypt15
+wape oneoff bundle -k <64-char-hex-key> -t leads
 ```
 
 ---
