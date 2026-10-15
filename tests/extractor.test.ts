@@ -1145,11 +1145,24 @@ describe("Group and Community Extractor", () => {
   });
 
   it("records and retrieves contact group provenance across multiple backups and one-offs", async () => {
-    const { recordScanProvenance, getContactProvenance, saveContactsToList } =
-      await import("../src/services/wape-store");
+    const {
+      recordScanProvenance,
+      getContactProvenance,
+      saveContactsToList,
+      saveRoom,
+    } = await import("../src/services/wape-store");
 
     saveContactsToList("main", new Set(["+2348012345678"]));
     saveContactsToList("real-estate", new Set(["+2348012345678"]));
+
+    saveRoom({
+      id: "investors-room",
+      name: "Investors Hub",
+      groupIds: ["120363011111111111@g.us"],
+      groupNames: ["Landlords Forum"],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
 
     // 1. Primary scan
     recordScanProvenance({
@@ -1209,6 +1222,17 @@ describe("Group and Community Extractor", () => {
 
     expect(provenance?.lists).toContain("main");
     expect(provenance?.lists).toContain("real-estate");
+
+    const landlordsGroup = provenance?.groups.find(
+      (g) => g.subject === "Landlords Forum",
+    );
+    expect(landlordsGroup?.rooms).toContain("investors-room (Investors Hub)");
+    expect(provenance?.rooms).toContain("investors-room (Investors Hub)");
+
+    const unassignedGroup = provenance?.groups.find(
+      (g) => g.subject === "Crypto Traders Lagos",
+    );
+    expect(unassignedGroup?.rooms).toEqual([]);
   });
 
   it("migrates all legacy text lists, rooms, links, and ignored groups to SQLite on first run", async () => {
@@ -1446,6 +1470,36 @@ describe("Group and Community Extractor", () => {
     expect(oneoffResult).toContain("Tech Hub");
     expect(oneoffResult).toContain("One-off: Alice Work Phone");
     expect(oneoffResult).toContain("0803 987 6543");
+
+    // 4. Group with single room
+    const singleRoomGroup = {
+      ...standaloneGroup,
+      rooms: ["gunner"],
+    };
+    const singleRoomResult = formatProvenanceGroupItem(singleRoomGroup);
+    expect(singleRoomResult).toContain("[Room: gunner]");
+
+    // 5. Group with multiple rooms
+    const multiRoomGroup = {
+      ...standaloneGroup,
+      rooms: ["gunner", "norm"],
+    };
+    const multiRoomResult = formatProvenanceGroupItem(multiRoomGroup);
+    expect(multiRoomResult).toContain("[Rooms: gunner, norm]");
+
+    // 6. Group with no rooms
+    const noRoomGroup = {
+      ...standaloneGroup,
+      rooms: [],
+    };
+    const noRoomResult = formatProvenanceGroupItem(noRoomGroup);
+    expect(noRoomResult).toContain("[No Room]");
+
+    // 7. Suppress rooms with showRooms: false
+    const suppressedResult = formatProvenanceGroupItem(singleRoomGroup, {
+      showRooms: false,
+    });
+    expect(suppressedResult).not.toContain("[Room: gunner]");
   });
 
   it("identifies whether a group belongs to a room by JID or group name", async () => {

@@ -20,7 +20,10 @@ import { formatPhoneNumber } from "../services/phone";
 import { printIgnoredGroups } from "./ignore-manager";
 import { searchCheckbox } from "./search-checkbox";
 
-export function formatProvenanceGroupItem(group: ContactProvenanceGroup) {
+export function formatProvenanceGroupItem(
+  group: ContactProvenanceGroup,
+  options?: { showRooms?: boolean },
+) {
   const comm = group.communityName
     ? `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ `
     : `${pc.dim("[Standalone]")} • `;
@@ -40,7 +43,20 @@ export function formatProvenanceGroupItem(group: ContactProvenanceGroup) {
     extraInfo = ` ${pc.magenta(`(One-off: ${labels})`)}`;
   }
 
-  return `${comm}${group.subject}${extraInfo}`;
+  let roomInfo = "";
+  if (options?.showRooms !== false && group.rooms !== undefined) {
+    if (group.rooms.length > 0) {
+      const roomLabel =
+        group.rooms.length === 1
+          ? `Room: ${group.rooms[0]}`
+          : `Rooms: ${group.rooms.join(", ")}`;
+      roomInfo = ` ${pc.green(`[${roomLabel}]`)}`;
+    } else {
+      roomInfo = ` ${pc.dim("[No Room]")}`;
+    }
+  }
+
+  return `${comm}${group.subject}${extraInfo}${roomInfo}`;
 }
 
 export function formatGroupLabel(group: {

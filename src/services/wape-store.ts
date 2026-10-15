@@ -59,6 +59,7 @@ export interface ContactProvenanceGroup {
   jid: string;
   subject: string;
   communityName: string | null;
+  rooms?: string[];
   sources: Array<{
     sourceType: string;
     sourceLabel: string;
@@ -968,6 +969,19 @@ export function getContactProvenance(phone: string): ContactProvenance | null {
 
   const uniqueGroups = Array.from(groupsMap.values());
 
+  // Match rooms for each group
+  const allRooms = getRooms();
+  for (const group of uniqueGroups) {
+    const matched = allRooms
+      .filter((room) => isGroupInRoom(group, room))
+      .map((room) =>
+        room.name && room.name !== room.id
+          ? `${room.id} (${room.name})`
+          : room.id,
+      );
+    group.rooms = matched;
+  }
+
   // 2. Fetch rooms
   interface RoomRow {
     id: string;
@@ -992,9 +1006,18 @@ export function getContactProvenance(phone: string): ContactProvenance | null {
     )
     .all(contactRow.id, contactRow.id) as RoomRow[];
 
-  const rooms = roomRows.map((r) =>
-    r.name && r.name !== r.id ? `${r.id} (${r.name})` : r.id,
+  const roomsSet = new Set<string>(
+    roomRows.map((r) =>
+      r.name && r.name !== r.id ? `${r.id} (${r.name})` : r.id,
+    ),
   );
+  for (const group of uniqueGroups) {
+    for (const r of group.rooms ?? []) {
+      roomsSet.add(r);
+    }
+  }
+
+  const rooms = Array.from(roomsSet).sort((a, b) => a.localeCompare(b));
 
   // 3. Fetch list memberships
   const listRows = db

@@ -1487,9 +1487,10 @@ async function executeCompare({
 
   const printGroupList = (
     groups: NonNullable<ReturnType<typeof getContactProvenance>>["groups"],
+    options?: { showRooms?: boolean },
   ) => {
     groups.forEach((group) => {
-      console.log(`    • ${formatProvenanceGroupItem(group)}`);
+      console.log(`    • ${formatProvenanceGroupItem(group, options)}`);
     });
   };
 
@@ -1514,7 +1515,7 @@ async function executeCompare({
             }) ?? [];
 
           if (roomGroups.length > 0) {
-            printGroupList(roomGroups);
+            printGroupList(roomGroups, { showRooms: false });
           } else {
             console.log(`    • ${pc.dim("(No identified group source)")}`);
           }
@@ -3078,6 +3079,19 @@ const sourceCmd = program
     if (provenance.rooms.length > 0) {
       provenance.rooms.forEach((r) => {
         console.log(`  • ${pc.green(r)}`);
+        const matchingGroups = provenance.groups.filter((g) =>
+          g.rooms?.includes(r),
+        );
+        if (matchingGroups.length > 0) {
+          matchingGroups.forEach((g) => {
+            const comm = g.communityName
+              ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} `
+              : "";
+            console.log(`    • ${comm}${g.subject}`);
+          });
+        } else {
+          console.log(`    • ${pc.dim("(Present via list only)")}`);
+        }
       });
     } else {
       console.log(pc.dim("  (None)"));
