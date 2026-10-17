@@ -678,14 +678,28 @@ describe("Group and Community Extractor", () => {
 
     expect(groups.length).toBe(5);
 
+    const root = groups.find((g) => g.subject === "Tech Community");
+    expect(root?.isCommunityRoot).toBe(true);
+    expect(root?.participantCount).toBe(4);
+    expect(root?.communityName).toBe("Tech Community");
+
+    const ann = groups.find(
+      (g) => g.subject === "Tech Community Announcements",
+    );
+    expect(ann?.isAnnouncement).toBe(true);
+    expect(ann?.communityName).toBe("Tech Community");
+
     const frontend = groups.find((g) => g.subject === "Frontend Devs");
-    expect(frontend?.communityName).toBe("Tech Community Announcements");
+    expect(frontend?.communityName).toBe("Tech Community");
+    expect(frontend?.isSubgroup).toBe(true);
 
     const backend = groups.find((g) => g.subject === "Backend Devs");
     expect(backend?.communityName).toBe("Tech Community");
+    expect(backend?.isSubgroup).toBe(true);
 
     const family = groups.find((g) => g.subject === "Family Group");
     expect(family?.communityName).toBeNull();
+    expect(family?.isStandalone).toBe(true);
   });
 
   it("dynamically resolves all storage paths relative to custom WAPE_HOME", async () => {
@@ -1854,5 +1868,412 @@ describe("Chat Exporter & Search Service", () => {
     expect(exported.messageCount).toBe(2);
     expect(exported.text).toContain("Alex Designer: Reviewing design mocks");
     expect(exported.text).toContain("Edwin: Looks awesome!");
+  });
+
+  it("audits exitable groups correctly identifying left undeleted, inactive, event, turnstile, and spam groups", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { auditExitableGroups } = await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT NOT NULL, server TEXT NOT NULL, raw_string TEXT);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER UNIQUE, subject TEXT, group_type INTEGER, participation_status INTEGER);
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER NOT NULL, from_me INTEGER, text_data TEXT, timestamp INTEGER, message_type INTEGER);
+      CREATE TABLE message_system (message_row_id INTEGER PRIMARY KEY, action_type INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER);
+      CREATE TABLE group_past_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL);
+    `);
+
+    const now = new Date("2026-10-17T12:00:00Z").getTime();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const sixMonthsAgo = now - 180 * oneDay;
+    const twoMonthsAgo = now - 60 * oneDay;
+    const oneWeekAgo = now - 7 * oneDay;
+
+    // Chat 1: Left group but undeleted messages (participation_status = 3, messages exist)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (1, 101, 'UK Visa 2022', 3)`,
+    );
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp) VALUES (1, 'Hello old visa chat', ?)`,
+      [sixMonthsAgo],
+    );
+
+    // Chat 2: Inactive group (last message was 120 days ago)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (2, 102, 'Old University Study Group', 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (102, 1, 1), (102, 2, 0), (102, 3, 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp) VALUES (2, 'Let us prepare for finals', ?)`,
+      [now - 120 * oneDay],
+    );
+
+    // Chat 3: Temporary/event group (Subject has past year, flatlined 60 days ago)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (3, 103, 'Lagos Tech Hackathon 2023', 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (103, 1, 1), (103, 2, 0), (103, 3, 0)`,
+    );
+    // 20 messages during hackathon, then flatline for 60 days
+    for (let i = 1; i <= 20; i++) {
+      sqlite.run(
+        `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (3, 'Hackathon milestone update', ?, 0)`,
+        [twoMonthsAgo - i * 1000],
+      );
+    }
+
+    // Chat 4: Turnstile group (12 messages in last week, 11 are system join/leaves)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (4, 104, 'Job Board Broadcast', 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (104, 1, 1), (104, 2, 0), (104, 3, 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (4, 'Welcome', ?, 0)`,
+      [oneWeekAgo],
+    );
+    for (let i = 1; i <= 11; i++) {
+      sqlite.run(
+        `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (4, NULL, ?, 7)`,
+        [oneWeekAgo + i * 1000],
+      );
+    }
+
+    // Chat 5: Spam link dump (10 messages in last week, 8 are link dumps)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (5, 105, 'Free Crypto Rewards', 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (105, 1, 1), (105, 2, 0), (105, 3, 0)`,
+    );
+    for (let i = 1; i <= 8; i++) {
+      sqlite.run(
+        `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (5, 'Claim tokens: https://scam-rewards.xyz/claim', ?, 0)`,
+        [oneWeekAgo + i * 1000],
+      );
+    }
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (5, 'Hey all', ?, 0)`,
+      [oneWeekAgo + 9000],
+    );
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (5, 'Another note', ?, 0)`,
+      [oneWeekAgo + 9500],
+    );
+
+    // Chat 6: Active, healthy group (should NOT be flagged)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, participation_status) VALUES (6, 106, 'Active Project Discussion', 0)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (106, 1, 1), (106, 2, 0), (106, 3, 0)`,
+    );
+    for (let i = 1; i <= 15; i++) {
+      sqlite.run(
+        `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (6, 'Discussion update and progress review', ?, 0)`,
+        [oneWeekAgo + i * 1000],
+      );
+    }
+
+    const db = drizzle({
+      client: sqlite,
+      schema,
+    }) as unknown as import("../src/db").AppDatabase;
+
+    const allGroups = [
+      {
+        jidRowId: 101,
+        jidString: "101@g.us",
+        subject: "UK Visa 2022",
+        groupType: 0,
+        communityName: null,
+        participantCount: 15,
+      },
+      {
+        jidRowId: 102,
+        jidString: "102@g.us",
+        subject: "Old University Study Group",
+        groupType: 0,
+        communityName: null,
+        participantCount: 3,
+      },
+      {
+        jidRowId: 103,
+        jidString: "103@g.us",
+        subject: "Lagos Tech Hackathon 2023",
+        groupType: 0,
+        communityName: null,
+        participantCount: 3,
+      },
+      {
+        jidRowId: 104,
+        jidString: "104@g.us",
+        subject: "Job Board Broadcast",
+        groupType: 0,
+        communityName: null,
+        participantCount: 3,
+      },
+      {
+        jidRowId: 105,
+        jidString: "105@g.us",
+        subject: "Free Crypto Rewards",
+        groupType: 0,
+        communityName: null,
+        participantCount: 3,
+      },
+      {
+        jidRowId: 106,
+        jidString: "106@g.us",
+        subject: "Active Project Discussion",
+        groupType: 0,
+        communityName: null,
+        participantCount: 3,
+      },
+    ];
+
+    const results = await auditExitableGroups(db, allGroups, { nowMs: now });
+    expect(results.length).toBe(5);
+
+    const leftUndeleted = results.find((r) => r.groupJidRowId === 101);
+    expect(leftUndeleted).toBeDefined();
+    expect(leftUndeleted?.category).toBe("left_undeleted");
+    expect(leftUndeleted?.reason).toBe(
+      "Left group but chat history was never deleted.",
+    );
+
+    const inactive = results.find((r) => r.groupJidRowId === 102);
+    expect(inactive).toBeDefined();
+    expect(inactive?.category).toBe("inactive");
+    expect(inactive?.reason).toBe("Inactive / completely dead.");
+
+    const eventGroup = results.find((r) => r.groupJidRowId === 103);
+    expect(eventGroup).toBeDefined();
+    expect(eventGroup?.category).toBe("temporary_event");
+    expect(eventGroup?.reason).toBe("Temporary or event group that has ended.");
+
+    const turnstile = results.find((r) => r.groupJidRowId === 104);
+    expect(turnstile).toBeDefined();
+    expect(turnstile?.category).toBe("turnstile");
+    expect(turnstile?.reason).toBe("Turnstile group with no real discussion.");
+
+    const spam = results.find((r) => r.groupJidRowId === 105);
+    expect(spam).toBeDefined();
+    expect(spam?.category).toBe("spam_link_sink");
+    expect(spam?.reason).toBe("High spam and link dump activity.");
+
+    // Healthy group 106 must NOT be in the results
+    expect(results.some((r) => r.groupJidRowId === 106)).toBe(false);
+  });
+
+  it("marks out community records vs subgroups and protects active community roots from false audit flagging", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { formatGroupLabel } = await import("../src/cli/room-manager");
+    const { auditExitableGroups } = await import("../src/services/extractor");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY AUTOINCREMENT, jid_row_id INTEGER UNIQUE, subject TEXT, group_type INTEGER, participation_status INTEGER);
+      CREATE TABLE message (_id INTEGER PRIMARY KEY AUTOINCREMENT, chat_row_id INTEGER NOT NULL, text_data TEXT, timestamp INTEGER, message_type INTEGER);
+      CREATE TABLE group_participant_user (_id INTEGER PRIMARY KEY AUTOINCREMENT, group_jid_row_id INTEGER NOT NULL, user_jid_row_id INTEGER NOT NULL, rank INTEGER);
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, server TEXT);
+    `);
+    sqlite.run(
+      `INSERT INTO jid (_id, user, server) VALUES (1, '2348012345678', 's.whatsapp.net')`,
+    );
+
+    // Community A:
+    // Root row (group_type = 1): subject "Designers Hub", only 1 admin in gpu
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type, participation_status) VALUES (1, 10, 'Designers Hub', 1, 1)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (10, 1, 1)`,
+    );
+
+    // Announcement row (group_type = 3): subject "Designers Hub Announcements", 300 members
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type, participation_status) VALUES (2, 20, 'Designers Hub Announcements', 3, 1)`,
+    );
+    for (let u = 1; u <= 300; u++) {
+      sqlite.run(
+        `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (20, ${u}, 0)`,
+      );
+    }
+
+    // Subgroup (group_type = 2): subject "UI/UX Chat", 100 members with an admin
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type, participation_status) VALUES (3, 30, 'UI/UX Chat', 2, 1)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (30, 1, 1)`,
+    );
+    for (let u = 2; u <= 100; u++) {
+      sqlite.run(
+        `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (30, ${u}, 0)`,
+      );
+    }
+
+    // Standalone group (group_type = 0)
+    sqlite.run(
+      `INSERT INTO chat (_id, jid_row_id, subject, group_type, participation_status) VALUES (4, 40, 'Weekend Hangout', 0, 1)`,
+    );
+    sqlite.run(
+      `INSERT INTO group_participant_user (group_jid_row_id, user_jid_row_id, rank) VALUES (40, 1, 1), (40, 2, 0)`,
+    );
+
+    // Add recent active message in Subgroup 30 so the community is active
+    const now = Date.now();
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (3, 'Hey everyone check this new design!', ${now - 1000}, 0)`,
+    );
+    // Add recent message in Standalone 40 so it is active but depleted (2 members)
+    sqlite.run(
+      `INSERT INTO message (chat_row_id, text_data, timestamp, message_type) VALUES (4, 'Hello anyone there?', ${now - 1000}, 0)`,
+    );
+
+    const db = drizzle({
+      client: sqlite,
+      schema,
+    }) as unknown as import("../src/db").AppDatabase;
+
+    const groups = [
+      {
+        jidRowId: 10,
+        jidString: "10@g.us",
+        subject: "Designers Hub",
+        groupType: 1,
+        communityName: "Designers Hub",
+        participantCount: 300,
+        isCommunityRoot: true,
+        isAnnouncement: false,
+        isSubgroup: false,
+        isStandalone: false,
+      },
+      {
+        jidRowId: 20,
+        jidString: "20@g.us",
+        subject: "Designers Hub Announcements",
+        groupType: 3,
+        communityName: "Designers Hub",
+        participantCount: 300,
+        isCommunityRoot: false,
+        isAnnouncement: true,
+        isSubgroup: false,
+        isStandalone: false,
+      },
+      {
+        jidRowId: 30,
+        jidString: "30@g.us",
+        subject: "UI/UX Chat",
+        groupType: 2,
+        communityName: "Designers Hub",
+        participantCount: 100,
+        isCommunityRoot: false,
+        isAnnouncement: false,
+        isSubgroup: true,
+        isStandalone: false,
+      },
+      {
+        jidRowId: 40,
+        jidString: "40@g.us",
+        subject: "Weekend Hangout",
+        groupType: 0,
+        communityName: null,
+        participantCount: 2,
+        isCommunityRoot: false,
+        isAnnouncement: false,
+        isSubgroup: false,
+        isStandalone: true,
+      },
+    ];
+
+    // 1. Verify formatGroupLabel calls out Community Record
+    const rootLabel = formatGroupLabel(groups[0]!);
+    expect(rootLabel).toContain("[🏛️ Community Record]");
+    expect(rootLabel).toContain("Designers Hub");
+    expect(rootLabel).toContain("300 total members");
+
+    // 2. Verify Announcement label
+    const annLabel = formatGroupLabel(groups[1]!);
+    expect(annLabel).toContain("[🏛️ Designers Hub]");
+    expect(annLabel).toContain("[Announcement]");
+    expect(annLabel).toContain("Designers Hub Announcements");
+    expect(annLabel).toContain("300 members");
+
+    // 3. Verify Subgroup label
+    const subLabel = formatGroupLabel(groups[2]!);
+    expect(subLabel).toContain("[🏛️ Designers Hub]");
+    expect(subLabel).toContain("UI/UX Chat");
+    expect(subLabel).toContain("100 members");
+
+    // 4. Verify Standalone label
+    const standLabel = formatGroupLabel(groups[3]!);
+    expect(standLabel).toContain("[Standalone]");
+    expect(standLabel).toContain("Weekend Hangout");
+
+    // 5. Verify auditExitableGroups:
+    // Community Root (10) must NOT be flagged as inactive or depleted because community is active and total members = 300
+    const exitable = await auditExitableGroups(db, groups, { nowMs: now });
+    expect(exitable.some((r) => r.groupJidRowId === 10)).toBe(false);
+    expect(exitable.some((r) => r.groupJidRowId === 30)).toBe(false);
+
+    // Standalone group 40 has 2 members, no messages -> flagged as depleted
+    const depleted = exitable.find((r) => r.groupJidRowId === 40);
+    expect(depleted).toBeDefined();
+    expect(depleted?.category).toBe("depleted_abandoned");
+
+    // 6. Verify resolveRoomGroups preserves community flags
+    const { resolveRoomGroups } = await import("../src/services/extractor");
+    const testRoom = {
+      id: "test-comm-room",
+      groupIds: ["10@g.us", "20@g.us", "30@g.us", "40@g.us"],
+      groupNames: [
+        "Designers Hub",
+        "Designers Hub Announcements",
+        "UI/UX Chat",
+        "Weekend Hangout",
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const resolved = resolveRoomGroups(testRoom, groups);
+    expect(resolved.resolvedItems[0]!.isCommunityRoot).toBe(true);
+    expect(resolved.resolvedItems[0]!.groupType).toBe(1);
+    expect(resolved.resolvedItems[1]!.isAnnouncement).toBe(true);
+    expect(resolved.resolvedItems[2]!.isSubgroup).toBe(true);
+    expect(resolved.resolvedItems[3]!.isStandalone).toBe(true);
+
+    // 7. Verify auditGroupDemographics preserves community flags
+    const { auditGroupDemographics } =
+      await import("../src/services/extractor");
+    const demographics = await auditGroupDemographics(
+      db,
+      resolved.resolvedItems
+        .filter((item) => item.resolvedJidRowId !== null)
+        .map((item) => ({
+          jidRowId: item.resolvedJidRowId!,
+          subject: item.subject,
+          communityName: item.communityName,
+          isCommunityRoot: item.isCommunityRoot,
+          isAnnouncement: item.isAnnouncement,
+          isSubgroup: item.isSubgroup,
+          isStandalone: item.isStandalone,
+        })),
+      50,
+      { filterExited: false },
+    );
+    expect(demographics[0]!.isCommunityRoot).toBe(true);
+    expect(demographics[1]!.isAnnouncement).toBe(true);
+    expect(demographics[2]!.isSubgroup).toBe(true);
+    expect(demographics[3]!.isStandalone).toBe(true);
   });
 });

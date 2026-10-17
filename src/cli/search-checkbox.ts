@@ -62,8 +62,11 @@ export const searchCheckbox = createPrompt(
     const filteredChoices = useMemo(() => {
       const query = searchTerm.trim().toLowerCase();
       const list = query
-        ? config.choices.filter((choice) =>
-            choice.name.toLowerCase().includes(query),
+        ? config.choices.filter(
+            (choice) =>
+              choice.name.toLowerCase().includes(query) ||
+              (choice.category &&
+                choice.category.toLowerCase().includes(query)),
           )
         : config.choices;
 
@@ -223,13 +226,24 @@ export const searchCheckbox = createPrompt(
 
           // Check if this item starts a new community category
           const prevItem = index > 0 ? filteredChoices[index - 1] : undefined;
-          const isNewCategory = prevItem && prevItem.category !== item.category;
+          const isNewCategory = prevItem
+            ? prevItem.category !== item.category
+            : Boolean(item.category);
 
-          const separator = isNewCategory
-            ? `${pc.dim("  ───────────────────────────────────────────────────────────")}\n`
-            : "";
+          let categoryHeader = "";
+          if (isNewCategory && item.category) {
+            const isStandalone = item.category === "Standalone Groups";
+            const title = isStandalone
+              ? pc.dim(pc.bold("📁  Standalone Groups"))
+              : pc.cyan(pc.bold(`🏛️   ${item.category}`));
+            const divider =
+              index > 0
+                ? `${pc.dim("  ───────────────────────────────────────────────────────────")}\n`
+                : "";
+            categoryHeader = `${divider}  ${title}\n`;
+          }
 
-          return `${separator}${cursor} ${checkbox} ${label}`;
+          return `${categoryHeader}${cursor} ${checkbox} ${label}`;
         },
       });
     }

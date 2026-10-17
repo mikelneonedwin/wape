@@ -149,7 +149,7 @@ wape rooms scan --lock
 
 ### 4. Groups & Ranking (`wape groups`)
 
-List all active WhatsApp group chats and their member counts, organized by community or ranked globally by membership:
+List all active WhatsApp group chats and their member counts, organized hierarchically by community or ranked globally by membership:
 
 ```bash
 # List all active WhatsApp groups grouped by community with member counts
@@ -167,6 +167,13 @@ wape groups --room <room-id> --rank
 # Specify custom backup or key
 wape groups --backup /path/to/backup.crypt15 --key <hex-key>
 ```
+
+#### Community Structure & Badges:
+
+- **`[🏛️ Community Record]`**: WhatsApp's parent community anchor record. Represents the directory of all members across the entire community (deduplicated total member count across announcements and subgroups), distinguishing it from normal group chats.
+- **`└─ [Announcement]`**: The broadcast channel for the community.
+- **`└─ <Subject>`**: Subgroups and topical discussion channels nested under the community.
+- **`[Standalone] • <Subject>`**: Independent groups not associated with any WhatsApp community.
 
 ---
 
@@ -438,6 +445,46 @@ wape chats search "modools" --since 7d --count
 # Filter by time range and limit results
 wape chats search "modools" --since 7d --limit 10
 ```
+
+---
+
+### 19. Group Audits (`wape audit`)
+
+Audit your WhatsApp groups to manage room demographics or identify groups to leave and prune:
+
+```bash
+# Audit a room for non-Nigerian demographic majority (prompts if room ID is omitted)
+wape audit [id]
+
+# Room demographic audit with custom threshold percentage (-t, --threshold)
+wape audit [id] -t 40
+wape audit [id] --threshold 40
+
+# Show all groups in the room, including non-flagged ones
+wape audit [id] --all
+
+# Scan all groups across your entire backup to recommend groups to leave or delete (-e, --exit)
+wape audit -e
+wape audit --exit
+
+# Audit only groups within a specific configured room for exit recommendations
+wape audit [id] -e
+wape audit [id] --exit
+
+# Interactively select flagged groups from audit output to ignore from future audits (-i, --interactive-ignore)
+wape audit [id] -i
+wape audit -e -i
+wape audit [id] -e -i
+```
+
+`wape audit -e` / `wape audit --exit` detects:
+
+- **Left but Undeleted Chats**: Groups you have exited, but cached chat history and messages remain in storage.
+- **Inactive / Completely Dead Groups**: Groups with zero messages in months (>90 days).
+- **Temporary / Expired Event Groups**: One-time event or cohort groups (e.g. hackathons, weddings, planning committees, past years) whose activity spiked and has flatlined.
+- **Turnstile Groups**: Groups where the vast majority of recent activity is just members joining and leaving with no real conversation.
+- **Spam & Link Dumps**: Groups dominated by standalone promotional links with zero discussion.
+- **Depleted / Abandoned Groups**: Groups with 2 or fewer participants or where all admins have left.
 
 ---
 

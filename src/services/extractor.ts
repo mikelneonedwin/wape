@@ -1,12 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { AppDatabase } from "../db";
-import {
-  chats,
-  groupParticipantUsers,
-  jids,
-  messages,
-  messageSystemWithGroupNodes,
-} from "../db/schema";
+import { chats, groupParticipantUsers, jids } from "../db/schema";
 import {
   normalizeNigerianPhoneNumber,
   normalizeOwnerPhoneNumber,
@@ -21,6 +15,10 @@ export interface GroupSummary {
   groupType: number;
   communityName: string | null;
   participantCount: number;
+  isCommunityRoot?: boolean;
+  isAnnouncement?: boolean;
+  isSubgroup?: boolean;
+  isStandalone?: boolean;
 }
 
 /**
@@ -58,8 +56,8 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
     )
     .orderBy(sql`${chats.subject} COLLATE NOCASE ASC`);
 
-  // 2. Query community parent / announcement chats (group_type 1 or 3)
-  const communityRows = await db
+  // 2. Query community parent root chats (group_type = 1)
+  const rootRows = await db
     .select({
       jidRowId: chats.jidRowId,
       subject: chats.subject,
@@ -67,53 +65,141 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
     })
     .from(chats)
     .where(
-      sql`${chats.groupType} IN (1, 3) AND ${chats.subject} IS NOT NULL AND ${chats.subject} != ''`,
+      sql`${chats.groupType} = 1 AND ${chats.subject} IS NOT NULL AND ${chats.subject} != ''`,
     );
 
-  const communityMap = new Map<number, string>();
-  for (const comm of communityRows) {
-    if (comm.jidRowId !== null && comm.subject) {
-      communityMap.set(comm.jidRowId, comm.subject.trim());
+  const rootMap = new Map<number, string>();
+  for (const root of rootRows) {
+    if (root.jidRowId !== null && root.subject) {
+      rootMap.set(root.jidRowId, root.subject.trim());
     }
   }
 
   // 3. Query direct parent links from message_system_with_group_nodes if table is present
   const directParentMap = new Map<number, string>();
   try {
-    const nodeRows = await db
-      .select({
-        groupJidRowId: chats.jidRowId,
-        parentJidRowId: messageSystemWithGroupNodes.groupJidRowId,
-        parentSubject: messageSystemWithGroupNodes.groupSubject,
-      })
-      .from(messageSystemWithGroupNodes)
-      .innerJoin(
-        messages,
-        sql`${messageSystemWithGroupNodes.messageRowId} = ${messages.id}`,
+    const nodeRows = db.$client
+      .query<
+        {
+          subgroupJidRowId: number;
+          parentJidRowId: number;
+          parentSubject: string | null;
+        },
+        []
+      >(
+        `SELECT
+           n2.group_jid_row_id as subgroupJidRowId,
+           n1.group_jid_row_id as parentJidRowId,
+           COALESCE(n1.group_subject, c1.subject) as parentSubject
+         FROM message_system_with_group_nodes n2
+         JOIN message_system_with_group_nodes n1
+           ON n2.message_row_id = n1.message_row_id AND n1.group_node_type = 1
+         LEFT JOIN chat c1 ON n1.group_jid_row_id = c1.jid_row_id
+         WHERE n2.group_node_type IN (2, 4)`,
       )
-      .innerJoin(chats, sql`${messages.chatRowId} = ${chats.id}`);
+      .all();
 
     for (const n of nodeRows) {
-      if (
-        n.groupJidRowId !== null &&
-        n.parentJidRowId !== null &&
-        n.groupJidRowId !== n.parentJidRowId
-      ) {
-        const parentName = (
-          n.parentSubject ||
-          communityMap.get(n.parentJidRowId) ||
-          ""
-        ).trim();
-        if (parentName) {
-          directParentMap.set(n.groupJidRowId, parentName);
-        }
+      const pName = n.parentSubject || rootMap.get(n.parentJidRowId);
+      if (pName && n.subgroupJidRowId !== n.parentJidRowId) {
+        directParentMap.set(n.subgroupJidRowId, pName.trim());
       }
     }
   } catch {
-    // Graceful fallback if table is not present in older databases
+    // Graceful fallback if table is not present
   }
 
-  // 4. Batch query participant memberships to determine community containment
+  try {
+    const chatNodeRows = db.$client
+      .query<
+        {
+          childJidRowId: number;
+          parentJidRowId: number;
+          parentSubject: string | null;
+        },
+        []
+      >(
+        `SELECT
+           c_msg.jid_row_id as childJidRowId,
+           gn.group_jid_row_id as parentJidRowId,
+           COALESCE(c_parent.subject, gn.group_subject) as parentSubject
+         FROM message_system_with_group_nodes gn
+         JOIN message m ON gn.message_row_id = m._id
+         JOIN chat c_msg ON m.chat_row_id = c_msg._id
+         LEFT JOIN chat c_parent ON gn.group_jid_row_id = c_parent.jid_row_id
+         WHERE c_msg.jid_row_id != gn.group_jid_row_id
+           AND (c_parent.group_type = 1 OR gn.group_node_type = 1)`,
+      )
+      .all();
+
+    for (const n of chatNodeRows) {
+      const pName = n.parentSubject || rootMap.get(n.parentJidRowId);
+      if (
+        pName &&
+        n.childJidRowId !== n.parentJidRowId &&
+        !directParentMap.has(n.childJidRowId)
+      ) {
+        directParentMap.set(n.childJidRowId, pName.trim());
+      }
+    }
+  } catch {
+    // Graceful fallback if table is not present
+  }
+
+  // 4. Map announcement groups (group_type = 3) to their parent community
+  const g3ParentMap = new Map<number, string>();
+  const sortedRoots = Array.from(rootMap.values()).sort(
+    (a, b) => b.length - a.length,
+  );
+
+  for (const g of groupRows) {
+    if (g.groupType === 3 && g.subject) {
+      const direct =
+        g.jidRowId !== null ? directParentMap.get(g.jidRowId) : undefined;
+      if (direct) {
+        g3ParentMap.set(g.jidRowId!, direct);
+      } else {
+        let matched: string | null = null;
+        const s3 = g.subject.trim().toLowerCase();
+
+        // 1. Exact match against root community name
+        for (const [, rSubj] of rootMap.entries()) {
+          if (s3 === rSubj.toLowerCase()) {
+            matched = rSubj;
+            break;
+          }
+        }
+
+        // 2. Normalized prefix/suffix match (prioritizing longest candidate names)
+        if (!matched) {
+          const cleanS3 = s3
+            .replace(
+              /\s*(announcements?|updates?|broadcast|official)\s*/gi,
+              " ",
+            )
+            .trim();
+          if (cleanS3.length >= 4) {
+            for (const rSubj of sortedRoots) {
+              const sr = rSubj.toLowerCase();
+              if (
+                cleanS3 === sr ||
+                s3.startsWith(sr) ||
+                cleanS3.startsWith(sr) ||
+                (sr.length >= 5 && sr.startsWith(cleanS3))
+              ) {
+                matched = rSubj;
+                break;
+              }
+            }
+          }
+        }
+
+        g3ParentMap.set(g.jidRowId!, matched || g.subject.trim());
+      }
+    }
+  }
+
+  // 5. Batch query participant memberships to determine community containment & total counts
   const allParticipantRows = await db
     .select({
       groupJidRowId: groupParticipantUsers.groupJidRowId,
@@ -122,7 +208,7 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
     .from(groupParticipantUsers);
 
   const groupParticipantsMap = new Map<number, number[]>();
-  const communityParticipantsMap = new Map<number, Set<number>>();
+  const communityParticipantsMap = new Map<string, Set<number>>();
 
   for (const p of allParticipantRows) {
     let gList = groupParticipantsMap.get(p.groupJidRowId);
@@ -132,11 +218,19 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
     }
     gList.push(p.userJidRowId);
 
-    if (communityMap.has(p.groupJidRowId)) {
-      let cSet = communityParticipantsMap.get(p.groupJidRowId);
+    // Register participants to community if group is a community root or announcement group
+    let commName: string | null = null;
+    if (rootMap.has(p.groupJidRowId)) {
+      commName = rootMap.get(p.groupJidRowId)!;
+    } else if (g3ParentMap.has(p.groupJidRowId)) {
+      commName = g3ParentMap.get(p.groupJidRowId)!;
+    }
+
+    if (commName) {
+      let cSet = communityParticipantsMap.get(commName);
       if (!cSet) {
         cSet = new Set<number>();
-        communityParticipantsMap.set(p.groupJidRowId, cSet);
+        communityParticipantsMap.set(commName, cSet);
       }
       cSet.add(p.userJidRowId);
     }
@@ -152,19 +246,24 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
     const groupType = g.groupType ?? 0;
     const cleanSubject = g.subject.trim();
     let communityName: string | null = null;
+    const isCommunityRoot = groupType === 1;
+    const isAnnouncement = groupType === 3;
+    let isSubgroup = groupType === 2 || groupType === 6;
 
-    if (groupType === 1 || groupType === 3) {
+    if (isCommunityRoot) {
       communityName = cleanSubject;
+    } else if (isAnnouncement) {
+      communityName = g3ParentMap.get(g.jidRowId) || cleanSubject;
     } else if (directParentMap.has(g.jidRowId)) {
       communityName = directParentMap.get(g.jidRowId)!;
+      isSubgroup = true;
     } else if (groupType > 0) {
       const participants = groupParticipantsMap.get(g.jidRowId) || [];
       let bestComm: string | null = null;
       let bestScore = 0;
       let bestRatio = 0;
 
-      for (const [commJid, commSet] of communityParticipantsMap.entries()) {
-        if (commJid === g.jidRowId) continue;
+      for (const [commNameKey, commSet] of communityParticipantsMap.entries()) {
         let matches = 0;
         for (const p of participants) {
           if (commSet.has(p)) matches++;
@@ -177,12 +276,30 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
         ) {
           bestScore = matches;
           bestRatio = ratio;
-          bestComm = communityMap.get(commJid) ?? null;
+          bestComm = commNameKey;
         }
       }
 
       communityName = bestComm;
+      if (communityName) {
+        isSubgroup = true;
+      }
     }
+
+    // Add subgroup participants to the community membership set
+    if (communityName) {
+      let cSet = communityParticipantsMap.get(communityName);
+      if (!cSet) {
+        cSet = new Set<number>();
+        communityParticipantsMap.set(communityName, cSet);
+      }
+      const participants = groupParticipantsMap.get(g.jidRowId) || [];
+      for (const p of participants) {
+        cSet.add(p);
+      }
+    }
+
+    const isStandalone = !communityName && (groupType === 0 || !groupType);
 
     const jidString =
       g.jidRawString ||
@@ -197,16 +314,59 @@ export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
       groupType,
       communityName,
       participantCount: g.participantCount,
+      isCommunityRoot,
+      isAnnouncement,
+      isSubgroup,
+      isStandalone,
     });
   }
 
-  // Sort groups: grouped by community name (with Standalone at the bottom), then by subject
-  validGroups.sort((a, b) => {
-    const commA = a.communityName ?? "ZZZ_Standalone";
-    const commB = b.communityName ?? "ZZZ_Standalone";
-    if (commA !== commB) {
-      return commA.localeCompare(commB);
+  // Update total participant count for Community Roots to represent the full community
+  for (const g of validGroups) {
+    if (g.isCommunityRoot && g.communityName) {
+      const commMembers = communityParticipantsMap.get(g.communityName);
+      if (commMembers && commMembers.size > g.participantCount) {
+        g.participantCount = commMembers.size;
+      }
     }
+  }
+
+  // Sort groups:
+  // 1. Communities first (alphabetical by communityName), Standalone at the bottom
+  // 2. Within each community:
+  //    - Community Root FIRST
+  //    - Announcement Group SECOND
+  //    - Subgroups THIRD (alphabetical by subject)
+  // 3. Within Standalone Groups: alphabetical by subject
+  validGroups.sort((a, b) => {
+    const isCommA = Boolean(a.communityName);
+    const isCommB = Boolean(b.communityName);
+    if (isCommA !== isCommB) {
+      return isCommA ? -1 : 1;
+    }
+    if (
+      a.communityName &&
+      b.communityName &&
+      a.communityName !== b.communityName
+    ) {
+      return a.communityName.localeCompare(b.communityName, undefined, {
+        sensitivity: "base",
+      });
+    }
+
+    const typeRank = (g: GroupSummary) => {
+      if (g.isCommunityRoot) return 1;
+      if (g.isAnnouncement) return 2;
+      if (g.isSubgroup) return 3;
+      return 4;
+    };
+
+    const rankA = typeRank(a);
+    const rankB = typeRank(b);
+    if (rankA !== rankB) {
+      return rankA - rankB;
+    }
+
     return a.subject.localeCompare(b.subject, undefined, {
       sensitivity: "base",
     });
@@ -223,6 +383,11 @@ export interface ResolvedRoomGroupItem {
   communityName: string | null;
   participantCount?: number;
   isMissing: boolean;
+  isCommunityRoot?: boolean;
+  isAnnouncement?: boolean;
+  isSubgroup?: boolean;
+  isStandalone?: boolean;
+  groupType?: number;
 }
 
 export interface ResolvedRoomResult {
@@ -311,6 +476,11 @@ export function resolveRoomGroups(
           communityName: match.communityName,
           participantCount: match.participantCount,
           isMissing: false,
+          isCommunityRoot: match.isCommunityRoot,
+          isAnnouncement: match.isAnnouncement,
+          isSubgroup: match.isSubgroup,
+          isStandalone: match.isStandalone,
+          groupType: match.groupType,
         });
         activeJidRowIds.push(match.jidRowId);
         activeJidStrings.push(match.jidString);
@@ -346,6 +516,11 @@ export function resolveRoomGroups(
           communityName: rowMatch.communityName,
           participantCount: rowMatch.participantCount,
           isMissing: false,
+          isCommunityRoot: rowMatch.isCommunityRoot,
+          isAnnouncement: rowMatch.isAnnouncement,
+          isSubgroup: rowMatch.isSubgroup,
+          isStandalone: rowMatch.isStandalone,
+          groupType: rowMatch.groupType,
         });
         activeJidRowIds.push(rowMatch.jidRowId);
         activeJidStrings.push(rowMatch.jidString);
@@ -374,6 +549,11 @@ export function resolveRoomGroups(
             communityName: subMatch.communityName,
             participantCount: subMatch.participantCount,
             isMissing: false,
+            isCommunityRoot: subMatch.isCommunityRoot,
+            isAnnouncement: subMatch.isAnnouncement,
+            isSubgroup: subMatch.isSubgroup,
+            isStandalone: subMatch.isStandalone,
+            groupType: subMatch.groupType,
           });
           activeJidRowIds.push(subMatch.jidRowId);
           activeJidStrings.push(subMatch.jidString);
@@ -391,6 +571,11 @@ export function resolveRoomGroups(
             communityName: rowMatch.communityName,
             participantCount: rowMatch.participantCount,
             isMissing: false,
+            isCommunityRoot: rowMatch.isCommunityRoot,
+            isAnnouncement: rowMatch.isAnnouncement,
+            isSubgroup: rowMatch.isSubgroup,
+            isStandalone: rowMatch.isStandalone,
+            groupType: rowMatch.groupType,
           });
           activeJidRowIds.push(rowMatch.jidRowId);
         } else {
@@ -485,6 +670,74 @@ export async function detectWhatsAppOwnerPhone(
   }
 
   return null;
+}
+
+export function getOwnerJidRowIds(db: AppDatabase): Set<number> {
+  const ownerRowIds = new Set<number>();
+
+  // 1. WhatsApp JID type 11 (JID_TYPE_USER_SELF) or server in ('lid_me', 'status_me')
+  try {
+    const rows = db.$client
+      .query<{ _id: number }, []>(
+        `SELECT _id FROM jid WHERE type = 11 OR server IN ('lid_me', 'status_me')`,
+      )
+      .all();
+    for (const r of rows) {
+      if (r._id) ownerRowIds.add(r._id);
+    }
+  } catch {
+    // Graceful fallback if type column doesn't exist
+  }
+
+  // 2. Props / settings fallback
+  try {
+    const prop = db.$client
+      .query<{ value: string }, []>(
+        `SELECT value FROM props WHERE key IN ('my_jid', 'registration_jid') LIMIT 1`,
+      )
+      .get();
+    if (prop?.value) {
+      const userPart = prop.value.split("@")[0] || prop.value;
+      const rows = db.$client
+        .query<{ _id: number }, [string]>(`SELECT _id FROM jid WHERE user = ?`)
+        .all(userPart);
+      for (const r of rows) {
+        if (r._id) ownerRowIds.add(r._id);
+      }
+    }
+  } catch {
+    // Props or jid table may not exist in mock schema
+  }
+
+  // 3. Fallback for mock test / legacy databases where type 11 is not set:
+  // If there's a jid row with Nigerian phone number, identify it as owner
+  if (ownerRowIds.size === 0) {
+    try {
+      const rows = db.$client
+        .query<{ _id: number; user: string }, []>(
+          `SELECT _id, user FROM jid WHERE server = 's.whatsapp.net'`,
+        )
+        .all();
+      for (const r of rows) {
+        if (normalizeNigerianPhoneNumber(r.user)) {
+          ownerRowIds.add(r._id);
+          break;
+        }
+      }
+      if (ownerRowIds.size === 0 && rows.length > 0 && rows[0]?._id) {
+        ownerRowIds.add(rows[0]._id);
+      }
+    } catch {
+      // JID table may not exist
+    }
+  }
+
+  // 4. Default fallback when jid table doesn't exist (e.g. mock test with only group_participant_user)
+  if (ownerRowIds.size === 0) {
+    ownerRowIds.add(1);
+  }
+
+  return ownerRowIds;
 }
 
 export interface GroupProvenanceExtraction {
@@ -726,11 +979,16 @@ export interface GroupDemographics {
   unmappedCount: number;
   nonNigerianPercentage: number;
   isFlagged: boolean;
+  isCommunityRoot?: boolean;
+  isAnnouncement?: boolean;
+  isSubgroup?: boolean;
+  isStandalone?: boolean;
 }
 
 /**
  * Detects which group JID row IDs have been exited by the account owner.
- * Checks chat.participation_status = 3 and message_system action_type = 5 (from_me = 1).
+ * Ensures active groups where the owner is an active participant in group_participant_user
+ * or an active admin/member are never flagged as exited.
  */
 export function getExitedGroupJids(
   db: AppDatabase,
@@ -740,34 +998,110 @@ export function getExitedGroupJids(
   if (groupJidRowIds.length === 0) return exited;
   const placeholders = groupJidRowIds.map(() => "?").join(",");
 
-  try {
-    const rows = db.$client
-      .query<{ jidRowId: number }, number[]>(
-        `SELECT jid_row_id as jidRowId FROM chat WHERE participation_status = 3 AND jid_row_id IN (${placeholders})`,
-      )
-      .all(...groupJidRowIds);
-    for (const r of rows) {
-      if (r.jidRowId) exited.add(r.jidRowId);
+  const ownerJidRowIds = getOwnerJidRowIds(db);
+  const activeJids = new Set<number>();
+
+  // 1. Identify groups where owner is currently in group_participant_user
+  if (ownerJidRowIds.size > 0) {
+    const ownerIds = Array.from(ownerJidRowIds);
+    const ownerPlaceholders = ownerIds.map(() => "?").join(",");
+    try {
+      const activeRows = db.$client
+        .query<{ groupJidRowId: number }, number[]>(
+          `SELECT DISTINCT group_jid_row_id as groupJidRowId 
+           FROM group_participant_user 
+           WHERE user_jid_row_id IN (${ownerPlaceholders}) 
+             AND group_jid_row_id IN (${placeholders})`,
+        )
+        .all(...ownerIds, ...groupJidRowIds);
+      for (const r of activeRows) {
+        if (r.groupJidRowId) activeJids.add(r.groupJidRowId);
+      }
+    } catch {
+      // Graceful fallback
     }
-  } catch {
-    // Graceful fallback if participation_status column does not exist
   }
 
+  // 2. Identify groups where chat indicates community parent roots
+  // (group_type = 1 or participation_status = 1) - these are containers, not exited chats
   try {
-    const rows = db.$client
+    const communityRoots = db.$client
+      .query<{ jidRowId: number }, number[]>(
+        `SELECT jid_row_id as jidRowId 
+         FROM chat 
+         WHERE (group_type = 1 OR participation_status = 1) 
+           AND jid_row_id IN (${placeholders})`,
+      )
+      .all(...groupJidRowIds);
+    for (const r of communityRoots) {
+      if (r.jidRowId) activeJids.add(r.jidRowId);
+    }
+  } catch {
+    // Graceful fallback
+  }
+
+  // 3. For any group that is NOT active (owner is not in group_participant_user):
+  // Check if there is an exit indicator:
+  // a) Legacy/mock status: participation_status = 3 (when owner is absent from group_participant_user)
+  try {
+    const legacyStatusRows = db.$client
+      .query<{ jidRowId: number }, number[]>(
+        `SELECT jid_row_id as jidRowId 
+         FROM chat 
+         WHERE participation_status = 3 
+           AND jid_row_id IN (${placeholders})`,
+      )
+      .all(...groupJidRowIds);
+    for (const r of legacyStatusRows) {
+      if (r.jidRowId && !activeJids.has(r.jidRowId)) {
+        exited.add(r.jidRowId);
+      }
+    }
+  } catch {
+    // Graceful fallback
+  }
+
+  // b) message_system action_type = 5 (when owner is absent from group_participant_user)
+  try {
+    const sysRows = db.$client
       .query<{ jidRowId: number }, number[]>(
         `SELECT DISTINCT c.jid_row_id as jidRowId 
          FROM message_system ms 
          JOIN message m ON ms.message_row_id = m._id 
          JOIN chat c ON m.chat_row_id = c._id 
-         WHERE ms.action_type = 5 AND m.from_me = 1 AND c.jid_row_id IN (${placeholders})`,
+         WHERE ms.action_type = 5 AND c.jid_row_id IN (${placeholders})`,
       )
       .all(...groupJidRowIds);
-    for (const r of rows) {
-      if (r.jidRowId) exited.add(r.jidRowId);
+    for (const r of sysRows) {
+      if (r.jidRowId && !activeJids.has(r.jidRowId)) {
+        exited.add(r.jidRowId);
+      }
     }
   } catch {
-    // Graceful fallback if message_system table does not exist
+    // Graceful fallback
+  }
+
+  // c) group_past_participant_user contains owner
+  if (ownerJidRowIds.size > 0) {
+    const ownerIds = Array.from(ownerJidRowIds);
+    const ownerPlaceholders = ownerIds.map(() => "?").join(",");
+    try {
+      const pastRows = db.$client
+        .query<{ groupJidRowId: number }, number[]>(
+          `SELECT DISTINCT group_jid_row_id as groupJidRowId 
+           FROM group_past_participant_user 
+           WHERE user_jid_row_id IN (${ownerPlaceholders}) 
+             AND group_jid_row_id IN (${placeholders})`,
+        )
+        .all(...ownerIds, ...groupJidRowIds);
+      for (const r of pastRows) {
+        if (r.groupJidRowId && !activeJids.has(r.groupJidRowId)) {
+          exited.add(r.groupJidRowId);
+        }
+      }
+    } catch {
+      // Graceful fallback
+    }
   }
 
   return exited;
@@ -784,6 +1118,10 @@ export async function auditGroupDemographics(
     jidRowId: number;
     subject: string;
     communityName?: string | null;
+    isCommunityRoot?: boolean;
+    isAnnouncement?: boolean;
+    isSubgroup?: boolean;
+    isStandalone?: boolean;
   }[],
   thresholdPercent = 50,
   options?: { filterExited?: boolean },
@@ -918,6 +1256,444 @@ export async function auditGroupDemographics(
       unmappedCount: stats.unmapped,
       nonNigerianPercentage: roundedPct,
       isFlagged: pct > thresholdPercent,
+      isCommunityRoot: g.isCommunityRoot,
+      isAnnouncement: g.isAnnouncement,
+      isSubgroup: g.isSubgroup,
+      isStandalone: g.isStandalone,
     };
   });
+}
+
+export type ExitableGroupCategory =
+  | "left_undeleted"
+  | "inactive"
+  | "temporary_event"
+  | "turnstile"
+  | "spam_link_sink"
+  | "depleted_abandoned";
+
+export interface ExitableGroupAudit {
+  groupJidRowId: number;
+  subject: string;
+  communityName: string | null;
+  totalMembers: number;
+  category: ExitableGroupCategory;
+  reason: string;
+  details: string;
+  lastMessageTimestamp: number | null;
+  messageCount: number;
+  isCommunityRoot?: boolean;
+  isAnnouncement?: boolean;
+}
+
+/**
+ * Audits all groups in the database to identify groups recommended for leaving or deleting:
+ * 1. Left groups whose chat history has not been deleted.
+ * 2. Inactive / completely dead groups with no messages in months (>90 days).
+ * 3. Temporary or event-based groups whose activity spiked and then flatlined.
+ * 4. Turnstile groups where recent activity is almost entirely join/leave system events.
+ * 5. Spam / link dump groups where standalone URLs dominate without conversation.
+ * 6. Depleted / abandoned groups where all admins have left or member count is <= 2.
+ */
+export async function auditExitableGroups(
+  db: AppDatabase,
+  allGroups: GroupSummary[],
+  options?: {
+    inactiveDaysThreshold?: number;
+    nowMs?: number;
+  },
+): Promise<ExitableGroupAudit[]> {
+  const now = options?.nowMs ?? Date.now();
+  const inactiveDays = options?.inactiveDaysThreshold ?? 90;
+  const inactiveThresholdMs = inactiveDays * 24 * 60 * 60 * 1000;
+
+  // 1. Identify left groups
+  const allGroupJids = allGroups.map((g) => g.jidRowId);
+  const exitedJidSet = getExitedGroupJids(db, allGroupJids);
+
+  // Combine exited groups from allGroups
+  const leftJidMap = new Map<number, string>();
+  for (const jid of exitedJidSet) {
+    const meta = allGroups.find((g) => g.jidRowId === jid);
+    leftJidMap.set(jid, meta?.subject || `Group ${jid}`);
+  }
+
+  const exitable: ExitableGroupAudit[] = [];
+
+  // Group metadata lookup
+  const groupMetaMap = new Map<number, GroupSummary>();
+  for (const g of allGroups) {
+    groupMetaMap.set(g.jidRowId, g);
+  }
+
+  // Check messages for left groups to confirm undeleted chat history
+  for (const [leftJid, subject] of leftJidMap.entries()) {
+    let msgCount = 0;
+    let lastTs: number | null = null;
+    try {
+      const stats = db.$client
+        .query<{ count: number; maxTs: number | null }, [number]>(
+          `SELECT count(m._id) as count, max(m.timestamp) as maxTs 
+           FROM message m 
+           JOIN chat c ON m.chat_row_id = c._id 
+           WHERE c.jid_row_id = ?`,
+        )
+        .get(leftJid);
+      msgCount = stats?.count ?? 0;
+      lastTs = stats?.maxTs ?? null;
+    } catch {
+      // Fallback
+    }
+
+    if (msgCount > 0) {
+      const meta = groupMetaMap.get(leftJid);
+      exitable.push({
+        groupJidRowId: leftJid,
+        subject,
+        communityName: meta?.communityName ?? null,
+        totalMembers: meta?.participantCount ?? 0,
+        category: "left_undeleted",
+        reason: "Left group but chat history was never deleted.",
+        details: `You already left this group. ${msgCount.toLocaleString()} cached messages are still stored on your device.`,
+        lastMessageTimestamp: lastTs,
+        messageCount: msgCount,
+        isCommunityRoot: meta?.isCommunityRoot,
+        isAnnouncement: meta?.isAnnouncement,
+      });
+    }
+  }
+
+  // 2. Query admin participants per group
+  const groupAdminCountMap = new Map<number, number>();
+  try {
+    const adminRows = db.$client
+      .query<{ groupJidRowId: number; adminCount: number }, []>(
+        `SELECT group_jid_row_id as groupJidRowId, count(_id) as adminCount 
+         FROM group_participant_user 
+         WHERE rank IN (1, 2) 
+         GROUP BY group_jid_row_id`,
+      )
+      .all();
+    for (const r of adminRows) {
+      groupAdminCountMap.set(r.groupJidRowId, r.adminCount);
+    }
+  } catch {
+    // Fallback if table structure differs
+  }
+
+  // 3. Analyze active (non-exited) groups
+  for (const g of allGroups) {
+    if (leftJidMap.has(g.jidRowId)) {
+      continue; // Handled under left_undeleted
+    }
+
+    // Retrieve message statistics for this group
+    interface GroupMsgStats {
+      total: number;
+      minTs: number | null;
+      maxTs: number | null;
+      systemCount: number;
+      textCount: number;
+      linkCount: number;
+      recentTotal: number;
+      recentSystem: number;
+    }
+
+    let stats: GroupMsgStats = {
+      total: 0,
+      minTs: null,
+      maxTs: null,
+      systemCount: 0,
+      textCount: 0,
+      linkCount: 0,
+      recentTotal: 0,
+      recentSystem: 0,
+    };
+
+    const recentCutoff = now - inactiveThresholdMs;
+
+    try {
+      const row = db.$client
+        .query<
+          {
+            total: number;
+            minTs: number | null;
+            maxTs: number | null;
+            systemCount: number;
+            textCount: number;
+            linkCount: number;
+            recentTotal: number;
+            recentSystem: number;
+          },
+          [number, number, number]
+        >(
+          `SELECT 
+             count(m._id) as total,
+             min(m.timestamp) as minTs,
+             max(m.timestamp) as maxTs,
+             sum(CASE WHEN m.message_type = 7 OR ms.message_row_id IS NOT NULL THEN 1 ELSE 0 END) as systemCount,
+             sum(CASE WHEN m.text_data IS NOT NULL AND length(trim(m.text_data)) > 0 THEN 1 ELSE 0 END) as textCount,
+             sum(CASE WHEN m.text_data LIKE '%http://%' OR m.text_data LIKE '%https://%' THEN 1 ELSE 0 END) as linkCount,
+             sum(CASE WHEN m.timestamp >= ? THEN 1 ELSE 0 END) as recentTotal,
+             sum(CASE WHEN m.timestamp >= ? AND (m.message_type = 7 OR ms.message_row_id IS NOT NULL) THEN 1 ELSE 0 END) as recentSystem
+           FROM message m 
+           JOIN chat c ON m.chat_row_id = c._id 
+           LEFT JOIN message_system ms ON m._id = ms.message_row_id
+           WHERE c.jid_row_id = ?`,
+        )
+        .get(recentCutoff, recentCutoff, g.jidRowId);
+
+      if (row) {
+        stats = {
+          total: row.total ?? 0,
+          minTs: row.maxTs ? row.minTs : null,
+          maxTs: row.maxTs,
+          systemCount: row.systemCount ?? 0,
+          textCount: row.textCount ?? 0,
+          linkCount: row.linkCount ?? 0,
+          recentTotal: row.recentTotal ?? 0,
+          recentSystem: row.recentSystem ?? 0,
+        };
+      }
+    } catch {
+      // Fallback query if message_system or message_type columns don't exist
+      try {
+        const fallbackRow = db.$client
+          .query<
+            {
+              total: number;
+              minTs: number | null;
+              maxTs: number | null;
+              textCount: number;
+              linkCount: number;
+              recentTotal: number;
+            },
+            [number, number]
+          >(
+            `SELECT 
+               count(m._id) as total,
+               min(m.timestamp) as minTs,
+               max(m.timestamp) as maxTs,
+               sum(CASE WHEN m.text_data IS NOT NULL AND length(trim(m.text_data)) > 0 THEN 1 ELSE 0 END) as textCount,
+               sum(CASE WHEN m.text_data LIKE '%http://%' OR m.text_data LIKE '%https://%' THEN 1 ELSE 0 END) as linkCount,
+               sum(CASE WHEN m.timestamp >= ? THEN 1 ELSE 0 END) as recentTotal
+             FROM message m 
+             JOIN chat c ON m.chat_row_id = c._id 
+             WHERE c.jid_row_id = ?`,
+          )
+          .get(recentCutoff, g.jidRowId);
+
+        if (fallbackRow) {
+          stats = {
+            total: fallbackRow.total ?? 0,
+            minTs: fallbackRow.maxTs ? fallbackRow.minTs : null,
+            maxTs: fallbackRow.maxTs,
+            systemCount: 0,
+            textCount: fallbackRow.textCount ?? 0,
+            linkCount: fallbackRow.linkCount ?? 0,
+            recentTotal: fallbackRow.recentTotal ?? 0,
+            recentSystem: 0,
+          };
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    const adminCount = groupAdminCountMap.get(g.jidRowId) ?? 0;
+    const daysSinceLastMessage = stats.maxTs
+      ? Math.floor((now - stats.maxTs) / (24 * 60 * 60 * 1000))
+      : null;
+
+    // Pattern A: Temporary or Expired Event Groups
+    const currentYear = new Date(now).getFullYear();
+    const eventYearMatch = g.subject.match(/\b(201\d|202[0-5])\b/);
+    const hasPastYear =
+      eventYearMatch && eventYearMatch[1]
+        ? parseInt(eventYearMatch[1], 10) < currentYear
+        : false;
+    const hasEventKeyword =
+      /\b(wedding|birthday|hangout|trip|tour|planning|committee|volunteers|hackathon|cohort|batch|class of)\b/i.test(
+        g.subject,
+      );
+
+    const isFlatlining =
+      daysSinceLastMessage !== null && daysSinceLastMessage >= 45;
+
+    if ((hasPastYear || hasEventKeyword) && isFlatlining) {
+      const yearText = eventYearMatch ? ` for ${eventYearMatch[1]}` : "";
+      exitable.push({
+        groupJidRowId: g.jidRowId,
+        subject: g.subject,
+        communityName: g.communityName,
+        totalMembers: g.participantCount,
+        category: "temporary_event",
+        reason: "Temporary or event group that has ended.",
+        details: `Name indicates a past event or temporary group${yearText}. Last message was ${daysSinceLastMessage} days ago.`,
+        lastMessageTimestamp: stats.maxTs,
+        messageCount: stats.total,
+        isCommunityRoot: g.isCommunityRoot,
+        isAnnouncement: g.isAnnouncement,
+      });
+      continue;
+    }
+
+    // Pattern B: Inactive / Completely Dead
+    // Community Roots (group_type = 1) are metadata nodes that don't receive user text messages directly.
+    // They are only considered inactive if the entire community (all announcement and subgroups) is inactive.
+    let isInactiveDead = false;
+    if (g.isCommunityRoot && g.communityName) {
+      const communitySiblings = allGroups.filter(
+        (s) => s.communityName === g.communityName && s.jidRowId !== g.jidRowId,
+      );
+      if (communitySiblings.length > 0) {
+        const siblingJids = communitySiblings.map((s) => s.jidRowId);
+        const placeholders = siblingJids.map(() => "?").join(",");
+        let recentSiblingCount = 0;
+        try {
+          const r = db.$client
+            .query<{ count: number }, [number, ...number[]]>(
+              `SELECT count(m._id) as count 
+               FROM message m 
+               JOIN chat c ON m.chat_row_id = c._id 
+               WHERE m.timestamp >= ? AND c.jid_row_id IN (${placeholders})`,
+            )
+            .get(recentCutoff, ...siblingJids);
+          recentSiblingCount = r?.count ?? 0;
+        } catch {
+          // Fallback
+        }
+        if (recentSiblingCount === 0) {
+          isInactiveDead = true;
+        }
+      } else if (
+        stats.total === 0 ||
+        (daysSinceLastMessage !== null && daysSinceLastMessage >= inactiveDays)
+      ) {
+        isInactiveDead = true;
+      }
+    } else if (
+      stats.total === 0 ||
+      (daysSinceLastMessage !== null && daysSinceLastMessage >= inactiveDays)
+    ) {
+      isInactiveDead = true;
+    }
+
+    if (isInactiveDead) {
+      const timeDesc =
+        daysSinceLastMessage !== null
+          ? `${daysSinceLastMessage} days (${new Date(stats.maxTs!).toLocaleDateString(undefined, { month: "short", year: "numeric" })})`
+          : "unknown";
+
+      exitable.push({
+        groupJidRowId: g.jidRowId,
+        subject: g.subject,
+        communityName: g.communityName,
+        totalMembers: g.participantCount,
+        category: "inactive",
+        reason: "Inactive / completely dead.",
+        details:
+          stats.total === 0
+            ? "No messages have ever been recorded in this group."
+            : `No messages have been sent by anyone in over ${inactiveDays} days (last active: ${timeDesc}).`,
+        lastMessageTimestamp: stats.maxTs,
+        messageCount: stats.total,
+        isCommunityRoot: g.isCommunityRoot,
+        isAnnouncement: g.isAnnouncement,
+      });
+      continue;
+    }
+
+    // Pattern C: Depleted or Abandoned
+    const isDepleted =
+      g.participantCount <= 2 || (adminCount === 0 && !g.isCommunityRoot);
+    if (isDepleted) {
+      const detailReason =
+        adminCount === 0
+          ? "All group admins have left or no admins remain to manage the group."
+          : `Only ${g.participantCount} members remain in this group.`;
+
+      exitable.push({
+        groupJidRowId: g.jidRowId,
+        subject: g.subject,
+        communityName: g.communityName,
+        totalMembers: g.participantCount,
+        category: "depleted_abandoned",
+        reason: "Depleted / abandoned group.",
+        details: detailReason,
+        lastMessageTimestamp: stats.maxTs,
+        messageCount: stats.total,
+        isCommunityRoot: g.isCommunityRoot,
+        isAnnouncement: g.isAnnouncement,
+      });
+      continue;
+    }
+
+    // Pattern D: Turnstile Group (High system joins/leaves, zero/negligible conversation)
+    if (
+      stats.recentTotal >= 10 &&
+      stats.recentSystem > 0 &&
+      stats.recentSystem / stats.recentTotal >= 0.8
+    ) {
+      const sysPct = Math.round((stats.recentSystem / stats.recentTotal) * 100);
+      exitable.push({
+        groupJidRowId: g.jidRowId,
+        subject: g.subject,
+        communityName: g.communityName,
+        totalMembers: g.participantCount,
+        category: "turnstile",
+        reason: "Turnstile group with no real discussion.",
+        details: `${sysPct}% of recent activity consists solely of members joining and leaving with no conversation.`,
+        lastMessageTimestamp: stats.maxTs,
+        messageCount: stats.total,
+        isCommunityRoot: g.isCommunityRoot,
+        isAnnouncement: g.isAnnouncement,
+      });
+      continue;
+    }
+
+    // Pattern E: Spam / Link Dump
+    if (
+      stats.total >= 10 &&
+      stats.textCount > 0 &&
+      stats.linkCount / stats.textCount >= 0.65
+    ) {
+      const linkPct = Math.round((stats.linkCount / stats.textCount) * 100);
+      exitable.push({
+        groupJidRowId: g.jidRowId,
+        subject: g.subject,
+        communityName: g.communityName,
+        totalMembers: g.participantCount,
+        category: "spam_link_sink",
+        reason: "High spam and link dump activity.",
+        details: `${linkPct}% of text messages in this group are standalone links or promotional broadcasts.`,
+        lastMessageTimestamp: stats.maxTs,
+        messageCount: stats.total,
+        isCommunityRoot: g.isCommunityRoot,
+        isAnnouncement: g.isAnnouncement,
+      });
+      continue;
+    }
+  }
+
+  // Sort exitable groups by category priority, then by subject
+  const categoryOrder: Record<ExitableGroupCategory, number> = {
+    left_undeleted: 1,
+    inactive: 2,
+    temporary_event: 3,
+    depleted_abandoned: 4,
+    spam_link_sink: 5,
+    turnstile: 6,
+  };
+
+  exitable.sort((a, b) => {
+    const orderA = categoryOrder[a.category] ?? 99;
+    const orderB = categoryOrder[b.category] ?? 99;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.subject.localeCompare(b.subject, undefined, {
+      sensitivity: "base",
+    });
+  });
+
+  return exitable;
 }

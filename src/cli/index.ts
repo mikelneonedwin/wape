@@ -9,6 +9,7 @@ import { getDatabase } from "../db";
 import { ensureDecryptedDatabase } from "../services/decryptor";
 import { copyToClipboard } from "../services/clipboard";
 import {
+  auditExitableGroups,
   auditGroupDemographics,
   detectWhatsAppOwnerPhone,
   extractNigerianNumbersWithGroupMapping,
@@ -45,7 +46,9 @@ import {
 import {
   addGroupsToRoomInteractive,
   createRoomInteractive,
+  formatGroupLabel,
   formatProvenanceGroupItem,
+  printExitableAudit,
   printGroups,
   printRoomAudit,
   printRoomDetail,
@@ -54,6 +57,7 @@ import {
   removeGroupsFromRoomInteractive,
 } from "./room-manager";
 import {
+  ignoreAuditItemsInteractive,
   ignoreGroupsInteractive,
   printIgnoredGroups,
   unignoreGroupsInteractive,
@@ -90,21 +94,6 @@ program
     "wape - WhatsApp Phone Number Extractor, Room Manager & List Aggregator",
   )
   .version("1.0.0");
-
-function formatGroupLabel(group: {
-  subject: string;
-  communityName: string | null;
-  participantCount?: number;
-}): string {
-  const countLabel =
-    group.participantCount !== undefined
-      ? ` ${pc.dim(`(${group.participantCount} members)`)}`
-      : "";
-  if (group.communityName) {
-    return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject}${countLabel}`;
-  }
-  return `${pc.dim("[Standalone]")} • ${group.subject}${countLabel}`;
-}
 
 async function loadDbAndGroups(backupPath?: string, backupKey?: string) {
   const dbPath = await ensureDecryptedDatabase({
@@ -1041,6 +1030,7 @@ async function executeRoomAudit(
     backup?: string;
     key?: string;
     all?: boolean;
+    interactiveIgnore?: boolean;
   },
 ) {
   try {
@@ -1104,6 +1094,10 @@ async function executeRoomAudit(
         jidRowId: item.resolvedJidRowId,
         subject: item.subject,
         communityName: item.communityName,
+        isCommunityRoot: item.isCommunityRoot,
+        isAnnouncement: item.isAnnouncement,
+        isSubgroup: item.isSubgroup,
+        isStandalone: item.isStandalone,
       }));
 
     const missingItems = resolved.resolvedItems.filter(
@@ -1124,6 +1118,31 @@ async function executeRoomAudit(
       options?.all ?? false,
       exitedJids.size,
     );
+
+    if (options?.interactiveIgnore) {
+      const flagged = demographics.filter((d) => d.isFlagged);
+      if (flagged.length > 0) {
+        const groupsByJidRowId = new Map(groups.map((g) => [g.jidRowId, g]));
+        const itemsToIgnore = flagged
+          .map((d) => {
+            const live = groupsByJidRowId.get(d.groupJidRowId);
+            if (!live) return null;
+            return {
+              jidString: live.jidString,
+              subject: d.subject,
+              communityName: d.communityName,
+              participantCount: d.totalMembers,
+              isCommunityRoot: live.isCommunityRoot,
+              isAnnouncement: live.isAnnouncement,
+              isSubgroup: live.isSubgroup,
+              isStandalone: live.isStandalone,
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
+
+        await ignoreAuditItemsInteractive(itemsToIgnore);
+      }
+    }
   } catch (error) {
     console.error(
       pc.red(
@@ -1143,6 +1162,11 @@ roomCmd
     "-t, --threshold <percent>",
     "Non-Nigerian percentage threshold (default: 50)",
     "50",
+  )
+  .option(
+    "-i, --interactive-ignore",
+    "Interactively select flagged groups from the audit output to ignore from future audits",
+    false,
   )
   .option(
     "-a, --all",
@@ -2972,21 +2996,31 @@ program
   );
 
 /**
- * Room Audit Command
+ * Audit Command (Demographic room audits & exitable group recommendations)
  */
 program
   .command("audit [id]")
   .description(
-    "Audit WhatsApp groups in a room for non-Nigerian demographic majority (>50%)",
+    "Audit WhatsApp groups: check room demographics (-t, --threshold) or find groups to leave/delete (-e, --exit)",
   )
   .option(
     "-t, --threshold <percent>",
-    "Non-Nigerian percentage threshold (default: 50)",
-    "50",
+    "Audit room for groups exceeding non-Nigerian percentage threshold (default: 50)",
   )
   .option(
+    "-e, --exit",
+    "Scan all groups to find inactive, dead, temporary, or spam groups recommended for leaving/deleting",
+    false,
+  )
+  .option("--exitable", "Alias for --exit", false)
+  .option(
     "-a, --all",
-    "Show all groups in the room, including non-flagged ones",
+    "Show all groups in the room, including non-flagged ones (for room demographic audit)",
+    false,
+  )
+  .option(
+    "-i, --interactive-ignore",
+    "Interactively select flagged groups from the audit output to ignore from future audits",
     false,
   )
   .option(
@@ -2994,7 +3028,91 @@ program
     "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
   )
   .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .action(executeRoomAudit);
+  .action(
+    async (
+      id?: string,
+      options?: {
+        threshold?: string;
+        exit?: boolean;
+        exitable?: boolean;
+        all?: boolean;
+        interactiveIgnore?: boolean;
+        backup?: string;
+        key?: string;
+      },
+    ) => {
+      if (options?.exit || options?.exitable) {
+        try {
+          let room: Room | null = null;
+          if (id) {
+            room = getRoomById(id);
+            if (!room) {
+              console.error(
+                pc.red(
+                  `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+                ),
+              );
+              process.exit(1);
+            }
+          }
+
+          const { db, groups } = await loadDbAndGroups(
+            options?.backup,
+            options?.key,
+          );
+
+          let targetGroups = groups;
+          if (room) {
+            const resolved = resolveRoomGroups(room, groups);
+            const activeJids = new Set(
+              resolved.resolvedItems
+                .filter(
+                  (item) => !item.isMissing && item.resolvedJidRowId !== null,
+                )
+                .map((item) => item.resolvedJidRowId!),
+            );
+            targetGroups = groups.filter((g) => activeJids.has(g.jidRowId));
+          }
+
+          const flagged = await auditExitableGroups(db, targetGroups);
+          printExitableAudit(flagged, targetGroups.length, {
+            roomContext: room,
+          });
+
+          if (options?.interactiveIgnore && flagged.length > 0) {
+            const groupsByJidRowId = new Map(
+              groups.map((g) => [g.jidRowId, g]),
+            );
+            const itemsToIgnore = flagged.map((item) => {
+              const live = groupsByJidRowId.get(item.groupJidRowId);
+              return {
+                jidString: live?.jidString ?? String(item.groupJidRowId),
+                subject: item.subject,
+                communityName: item.communityName,
+                participantCount: item.totalMembers,
+                isCommunityRoot: item.isCommunityRoot ?? live?.isCommunityRoot,
+                isAnnouncement: item.isAnnouncement ?? live?.isAnnouncement,
+                isSubgroup: live?.isSubgroup,
+                isStandalone: live?.isStandalone,
+              };
+            });
+
+            await ignoreAuditItemsInteractive(itemsToIgnore);
+          }
+        } catch (error) {
+          console.error(
+            pc.red(
+              `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+          process.exit(1);
+        }
+        return;
+      }
+
+      await executeRoomAudit(id, options);
+    },
+  );
 
 /**
  * Lists overview

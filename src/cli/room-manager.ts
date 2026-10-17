@@ -2,6 +2,7 @@ import { select } from "@inquirer/prompts";
 import pc from "picocolors";
 import {
   resolveRoomGroups,
+  type ExitableGroupAudit,
   type GroupDemographics,
   type GroupSummary,
   type ResolvedRoomGroupItem,
@@ -63,14 +64,33 @@ export function formatGroupLabel(group: {
   subject: string;
   communityName: string | null;
   participantCount?: number;
+  isCommunityRoot?: boolean;
+  isAnnouncement?: boolean;
+  isSubgroup?: boolean;
+  isStandalone?: boolean;
+  groupType?: number;
 }): string {
   const countLabel =
     group.participantCount !== undefined
       ? ` ${pc.dim(`(${group.participantCount.toLocaleString()} members)`)}`
       : "";
-  if (group.communityName) {
-    return `${pc.cyan(`[🏛️ ${group.communityName}]`)} └─ ${group.subject}${countLabel}`;
+
+  const isRoot = group.isCommunityRoot ?? group.groupType === 1;
+  const isAnn = group.isAnnouncement ?? group.groupType === 3;
+
+  if (isRoot) {
+    const totalCount =
+      group.participantCount !== undefined
+        ? ` ${pc.dim(`(${group.participantCount.toLocaleString()} total members)`)}`
+        : "";
+    return `${pc.magenta(pc.bold("[🏛️ Community Record]"))} ${group.subject}${totalCount}`;
   }
+
+  if (group.communityName) {
+    const badge = isAnn ? ` └─ ${pc.yellow("[Announcement]")} ` : " └─ ";
+    return `${pc.cyan(`[🏛️ ${group.communityName}]`)}${badge}${group.subject}${countLabel}`;
+  }
+
   return `${pc.dim("[Standalone]")} • ${group.subject}${countLabel}`;
 }
 
@@ -148,16 +168,41 @@ export function printGroups(
 
   for (const commName of sortedCommunityNames) {
     const commItems = communityMap.get(commName)!;
-    commItems.sort((a, b) =>
-      a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
-    );
+    commItems.sort((a, b) => {
+      const typeRank = (g: GroupSummary) => {
+        if (g.isCommunityRoot ?? g.groupType === 1) return 1;
+        if (g.isAnnouncement ?? g.groupType === 3) return 2;
+        if (g.isSubgroup ?? (g.groupType === 2 || g.groupType === 6)) return 3;
+        return 4;
+      };
+      const rankDiff = typeRank(a) - typeRank(b);
+      if (rankDiff !== 0) return rankDiff;
+      return a.subject.localeCompare(b.subject, undefined, {
+        sensitivity: "base",
+      });
+    });
 
     console.log(`  ${pc.cyan(pc.bold(`🏛️  ${commName}`))}`);
     for (const item of commItems) {
       const num = pc.dim(globalIndex.toString().padStart(3, " ") + ".");
       globalIndex++;
-      const countLabel = ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`;
-      console.log(`    ${num} └─ ${item.subject}${countLabel}`);
+      const isRoot = item.isCommunityRoot ?? item.groupType === 1;
+      const isAnn = item.isAnnouncement ?? item.groupType === 3;
+
+      if (isRoot) {
+        const countLabel = ` ${pc.dim(`(${item.participantCount.toLocaleString()} total members)`)}`;
+        console.log(
+          `    ${num} ${pc.magenta(pc.bold("[Community Record]"))} ${item.subject}${countLabel}`,
+        );
+      } else if (isAnn) {
+        const countLabel = ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`;
+        console.log(
+          `    ${num} └─ ${pc.yellow("[Announcement]")} ${item.subject}${countLabel}`,
+        );
+      } else {
+        const countLabel = ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`;
+        console.log(`    ${num} └─ ${item.subject}${countLabel}`);
+      }
     }
     console.log("");
   }
@@ -313,19 +358,50 @@ export function printRoomGroups(room: Room, groups?: GroupSummary[]): void {
 
   for (const commName of sortedCommunityNames) {
     const commItems = communityMap.get(commName)!;
-    commItems.sort((a, b) =>
-      a.subject.localeCompare(b.subject, undefined, { sensitivity: "base" }),
-    );
+    commItems.sort((a, b) => {
+      const typeRank = (g: typeof a) => {
+        if (g.isCommunityRoot ?? g.groupType === 1) return 1;
+        if (g.isAnnouncement ?? g.groupType === 3) return 2;
+        if (g.isSubgroup ?? (g.groupType === 2 || g.groupType === 6)) return 3;
+        return 4;
+      };
+      const rankDiff = typeRank(a) - typeRank(b);
+      if (rankDiff !== 0) return rankDiff;
+      return a.subject.localeCompare(b.subject, undefined, {
+        sensitivity: "base",
+      });
+    });
 
     console.log(`  ${pc.cyan(pc.bold(`🏛️  ${commName}`))}`);
     for (const item of commItems) {
       const num = pc.dim(globalIndex.toString().padStart(3, " ") + ".");
       globalIndex++;
-      const countLabel =
-        item.participantCount !== undefined
-          ? ` ${pc.dim(`(${item.participantCount} members)`)}`
-          : "";
-      console.log(`    ${num} └─ ${item.subject}${countLabel}`);
+      const isRoot = item.isCommunityRoot ?? item.groupType === 1;
+      const isAnn = item.isAnnouncement ?? item.groupType === 3;
+
+      if (isRoot) {
+        const countLabel =
+          item.participantCount !== undefined
+            ? ` ${pc.dim(`(${item.participantCount.toLocaleString()} total members)`)}`
+            : "";
+        console.log(
+          `    ${num} ${pc.magenta(pc.bold("[Community Record]"))} ${item.subject}${countLabel}`,
+        );
+      } else if (isAnn) {
+        const countLabel =
+          item.participantCount !== undefined
+            ? ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`
+            : "";
+        console.log(
+          `    ${num} └─ ${pc.yellow("[Announcement]")} ${item.subject}${countLabel}`,
+        );
+      } else {
+        const countLabel =
+          item.participantCount !== undefined
+            ? ` ${pc.dim(`(${item.participantCount.toLocaleString()} members)`)}`
+            : "";
+        console.log(`    ${num} └─ ${item.subject}${countLabel}`);
+      }
     }
     console.log("");
   }
@@ -372,28 +448,28 @@ export function printRoomAudit(
   console.log(
     pc.bold(
       pc.cyan(
-        `🔍 ROOM DEMOGRAPHICS AUDIT: ${room.id.toUpperCase()} (Threshold: > ${thresholdPercent}% Non-Nigerian)`,
+        `AUDIT RESULTS: ROOM "${room.id.toUpperCase()}" (Threshold: more than ${thresholdPercent}% non-Nigerian members)`,
       ),
     ),
   );
   console.log("=".repeat(75));
   console.log(`${pc.bold("Room ID:")}           ${pc.yellow(room.id)}`);
   const exitedNote =
-    exitedCount > 0 ? ` ${pc.dim(`(${exitedCount} exited skipped)`)}` : "";
+    exitedCount > 0 ? ` ${pc.dim(`(${exitedCount} left groups skipped)`)}` : "";
   console.log(
     `${pc.bold("Active Groups:")}     ${pc.white(demographics.length.toString())}${exitedNote}`,
   );
   const flaggedBadge =
     flagged.length > 0
-      ? pc.bold(pc.red(`🚩 ${flagged.length} group(s)`))
+      ? pc.bold(pc.red(`${flagged.length} group(s)`))
       : pc.bold(pc.green("0 groups (None)"));
   console.log(`${pc.bold("Flagged Groups:")}    ${flaggedBadge}`);
   console.log("-".repeat(75));
 
   const itemsToDisplay = showAll ? demographics : flagged;
   const sectionTitle = showAll
-    ? "📊 GROUP BREAKDOWN:"
-    : `🚩 FLAGGED GROUPS (>${thresholdPercent}% Non-Nigerian):`;
+    ? "ALL GROUPS IN ROOM:"
+    : `FLAGGED GROUPS (more than ${thresholdPercent}% non-Nigerian members):`;
   console.log(pc.bold(pc.cyan(sectionTitle)));
 
   if (itemsToDisplay.length === 0) {
@@ -402,46 +478,66 @@ export function printRoomAudit(
     } else {
       console.log(
         pc.green(
-          `\n  ✅ None! All active groups in this room have ≤ ${thresholdPercent}% non-Nigerian members.`,
+          `\n  None! All active groups in this room have ${thresholdPercent}% or fewer non-Nigerian members.`,
         ),
       );
     }
   } else {
     itemsToDisplay.forEach((item, idx) => {
       const num = pc.dim((idx + 1).toString().padStart(2, " ") + ".");
-      const flagSymbol = item.isFlagged
-        ? pc.bold(pc.red("🚩 [FLAGGED]"))
-        : pc.bold(pc.green("✅ [OK]     "));
+      const statusBadge = item.isFlagged
+        ? pc.bold(pc.red("[FLAGGED]"))
+        : pc.bold(pc.green("[OK]     "));
 
-      const commLabel = item.communityName
-        ? `${pc.cyan(`[🏛️ ${item.communityName}]`)} └─ `
-        : `${pc.dim("[Standalone]")} • `;
+      let typeBadge = "";
+      if (item.isCommunityRoot) {
+        typeBadge = `${pc.magenta(pc.bold("[Community Record]"))} `;
+      } else if (item.isAnnouncement) {
+        typeBadge = `${pc.yellow("[Announcement]")} `;
+      }
+
+      const commText = item.isCommunityRoot
+        ? "Community Record (Parent)"
+        : item.communityName
+          ? item.communityName
+          : "None (Standalone)";
+
+      const totalLabel = item.isCommunityRoot ? " total members" : " members";
 
       console.log(
-        `\n  ${num} ${flagSymbol} ${commLabel}${pc.bold(item.subject)} ${pc.dim(`(${item.totalMembers.toLocaleString()} members)`)}`,
+        `\n  ${num} ${statusBadge} ${typeBadge}${pc.bold(item.subject)} ${pc.dim(`(${item.totalMembers.toLocaleString()}${totalLabel})`)}`,
       );
-      console.log(
-        `      ${pc.dim("Demographics:")} Non-Nigerian: ${pc.yellow(item.nonNigerianCount.toLocaleString())} (${pc.yellow(`${item.nonNigerianPercentage}%`)}) | ` +
-          `Nigerian: ${pc.green(item.nigerianCount.toLocaleString())} | ` +
-          `Hidden/LID: ${pc.dim(item.unmappedCount.toLocaleString())}`,
-      );
+      console.log(`     ${pc.dim("Community:")}   ${pc.white(commText)}`);
+
       if (item.isFlagged) {
         console.log(
-          `      ${pc.dim("Status:")}       ${pc.red(pc.bold(`Exceeds threshold (${item.nonNigerianPercentage}% > ${thresholdPercent}%)`))}`,
+          `     ${pc.dim("Flag reason:")} ${pc.red(
+            `${item.nonNigerianPercentage}% of members (${item.nonNigerianCount.toLocaleString()}) are from outside Nigeria, which is higher than your ${thresholdPercent}% limit.`,
+          )}`,
         );
       } else {
         console.log(
-          `      ${pc.dim("Status:")}       ${pc.green(`Within threshold (${item.nonNigerianPercentage}% ≤ ${thresholdPercent}%)`)}`,
+          `     ${pc.dim("Status:")}      ${pc.green(
+            `${item.nonNigerianPercentage}% of members are from outside Nigeria, which is within your ${thresholdPercent}% limit.`,
+          )}`,
         );
       }
+
+      const hiddenText =
+        item.unmappedCount > 0
+          ? `, ${item.unmappedCount.toLocaleString()} private/hidden profiles`
+          : "";
+      console.log(
+        `     ${pc.dim("Breakdown:")}   ${item.nonNigerianCount.toLocaleString()} non-Nigerian, ${item.nigerianCount.toLocaleString()} Nigerian${hiddenText}.`,
+      );
     });
   }
 
   if (showAll && missingItems.length > 0) {
-    console.log(pc.dim("\n  Missing / Exited Groups:"));
+    console.log(pc.dim("\n  Missing or Exited Groups:"));
     missingItems.forEach((item) => {
       console.log(
-        `    ${pc.red("[⚠️ MISSING]")} ${pc.dim(item.subject)} ${pc.dim(`(ID: ${item.id})`)}`,
+        `    ${pc.red("[MISSING]")} ${pc.dim(item.subject)} ${pc.dim(`(ID: ${item.id})`)}`,
       );
     });
   }
@@ -451,7 +547,7 @@ export function printRoomAudit(
     console.log(
       pc.red(
         pc.bold(
-          `⚠️  Audit complete: ${flagged.length} of ${demographics.length} active groups exceed the ${thresholdPercent}% non-Nigerian threshold.`,
+          `Audit complete: ${flagged.length} of ${demographics.length} active groups have more than ${thresholdPercent}% non-Nigerian members.`,
         ),
       ),
     );
@@ -459,7 +555,93 @@ export function printRoomAudit(
     console.log(
       pc.green(
         pc.bold(
-          `✅ Audit complete: All active groups in this room are within the Nigerian demographic threshold (≤ ${thresholdPercent}% non-Nigerian).`,
+          `Audit complete: All active groups in this room are within your Nigerian demographic threshold (${thresholdPercent}% or fewer non-Nigerian members).`,
+        ),
+      ),
+    );
+  }
+  console.log("=".repeat(75) + "\n");
+}
+
+export function printExitableAudit(
+  flaggedGroups: ExitableGroupAudit[],
+  totalScannedCount: number,
+  options?: { roomContext?: Room | null },
+): void {
+  console.log(pc.cyan("\n" + "=".repeat(75)));
+  const title = options?.roomContext
+    ? `AUDIT RESULTS: ROOM "${options.roomContext.id.toUpperCase()}" (GROUPS RECOMMENDED TO LEAVE OR DELETE)`
+    : "AUDIT RESULTS: GROUPS RECOMMENDED TO LEAVE OR DELETE";
+  console.log(pc.bold(pc.cyan(title)));
+  console.log("=".repeat(75));
+  if (options?.roomContext) {
+    console.log(
+      `${pc.bold("Room ID:")}              ${pc.yellow(options.roomContext.id)}`,
+    );
+  }
+  console.log(
+    `${pc.bold("Total Groups Scanned:")} ${pc.white(totalScannedCount.toLocaleString())}`,
+  );
+  const flaggedBadge =
+    flaggedGroups.length > 0
+      ? pc.bold(pc.red(`${flaggedGroups.length} group(s)`))
+      : pc.bold(pc.green("0 groups (None)"));
+  console.log(`${pc.bold("Groups Flagged:")}       ${flaggedBadge}`);
+  console.log("-".repeat(75));
+
+  console.log(pc.bold(pc.cyan("FLAGGED GROUPS:")));
+
+  if (flaggedGroups.length === 0) {
+    console.log(
+      pc.green(
+        "\n  None! All scanned groups appear active, healthy, and relevant.",
+      ),
+    );
+  } else {
+    flaggedGroups.forEach((item, idx) => {
+      const num = pc.dim((idx + 1).toString().padStart(2, " ") + ".");
+      const statusBadge = pc.bold(pc.red("[FLAGGED]"));
+
+      const isRoot = item.isCommunityRoot;
+      const isAnn = item.isAnnouncement;
+      const typeBadge = isRoot
+        ? ` ${pc.magenta(pc.bold("[Community Record]"))}`
+        : isAnn
+          ? ` ${pc.yellow("[Announcement Group]")}`
+          : "";
+
+      const commText = item.communityName
+        ? item.communityName
+        : "None (Standalone)";
+
+      const memberText =
+        item.totalMembers > 0
+          ? ` (${item.totalMembers.toLocaleString()}${isRoot ? " total" : ""} members)`
+          : "";
+
+      console.log(
+        `\n  ${num} ${statusBadge}${typeBadge} ${pc.bold(item.subject)}${pc.dim(memberText)}`,
+      );
+      console.log(`     ${pc.dim("Community:")}   ${pc.white(commText)}`);
+      console.log(`     ${pc.dim("Flag reason:")} ${pc.red(item.reason)}`);
+      console.log(`     ${pc.dim("Details:")}     ${pc.white(item.details)}`);
+    });
+  }
+
+  console.log("\n" + "=".repeat(75));
+  if (flaggedGroups.length > 0) {
+    console.log(
+      pc.red(
+        pc.bold(
+          `Audit complete: ${flaggedGroups.length} of ${totalScannedCount} scanned groups are recommended for leaving or deleting.`,
+        ),
+      ),
+    );
+  } else {
+    console.log(
+      pc.green(
+        pc.bold(
+          "Audit complete: No groups flagged. All groups appear healthy.",
         ),
       ),
     );
@@ -697,7 +879,40 @@ export async function removeGroupsFromRoomInteractive(
     return;
   }
 
-  const choices = resolved.resolvedItems.map((item) => {
+  const sortedItems = [...resolved.resolvedItems].sort((a, b) => {
+    if (a.isMissing !== b.isMissing) return a.isMissing ? 1 : -1;
+
+    const isCommA = Boolean(a.communityName);
+    const isCommB = Boolean(b.communityName);
+    if (isCommA !== isCommB) return isCommA ? -1 : 1;
+
+    if (
+      a.communityName &&
+      b.communityName &&
+      a.communityName !== b.communityName
+    ) {
+      return a.communityName.localeCompare(b.communityName, undefined, {
+        sensitivity: "base",
+      });
+    }
+
+    if (a.communityName && b.communityName) {
+      const typeRank = (g: typeof a) => {
+        if (g.isCommunityRoot ?? g.groupType === 1) return 1;
+        if (g.isAnnouncement ?? g.groupType === 3) return 2;
+        if (g.isSubgroup ?? (g.groupType === 2 || g.groupType === 6)) return 3;
+        return 4;
+      };
+      const rankDiff = typeRank(a) - typeRank(b);
+      if (rankDiff !== 0) return rankDiff;
+    }
+
+    return a.subject.localeCompare(b.subject, undefined, {
+      sensitivity: "base",
+    });
+  });
+
+  const choices = sortedItems.map((item) => {
     if (!item.isMissing) {
       return {
         name: formatGroupLabel(item),
