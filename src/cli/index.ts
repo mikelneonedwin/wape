@@ -3277,90 +3277,106 @@ program
  * Contact Source / Provenance Command
  */
 const sourceCmd = program
-  .command("source [number]")
+  .command("source [numbers...]")
   .description(
-    "Display all groups, communities, backup sources, and lists a contact has been identified in",
+    "Display all groups, communities, backup sources, and lists one or more contacts have been identified in",
   )
-  .action((number?: string) => {
-    if (!number || !number.trim()) {
+  .action((numbers?: string[]) => {
+    if (!numbers || numbers.length === 0) {
       console.log(sourceCmd.helpInformation());
       return;
     }
 
-    const normalized = normalizeNigerianPhoneNumber(number.trim());
-    if (!normalized) {
-      console.error(
-        pc.red(`\n❌ Error: Invalid Nigerian phone number: '${number}'\n`),
-      );
-      process.exit(1);
+    const validEntries: { raw: string; normalized: string }[] = [];
+    for (const num of numbers) {
+      const clean = num.trim();
+      if (!clean) continue;
+      const normalized = normalizeNigerianPhoneNumber(clean);
+      if (!normalized) {
+        console.error(
+          pc.red(`\n❌ Error: Invalid Nigerian phone number: '${num}'\n`),
+        );
+        process.exit(1);
+      }
+      validEntries.push({ raw: num, normalized });
     }
 
-    const provenance = getContactProvenance(normalized);
-    if (
-      !provenance ||
-      (provenance.groups.length === 0 &&
-        provenance.rooms.length === 0 &&
-        provenance.lists.length === 0)
-    ) {
-      console.log(
-        pc.yellow(
-          `\nNo provenance records found for contact: ${formatPhoneNumber(normalized)} (${normalized})\n`,
-        ),
-      );
+    if (validEntries.length === 0) {
+      console.log(sourceCmd.helpInformation());
       return;
     }
 
-    console.log(pc.cyan("\n" + "=".repeat(66)));
-    console.log(
-      pc.bold(
-        pc.cyan(
-          `📱 CONTACT SOURCE REPORT: ${formatPhoneNumber(normalized)} (${normalized})`,
-        ),
-      ),
-    );
-    console.log("=".repeat(66));
-    console.log(
-      `${pc.bold("Total Groups Identified In:")} ${pc.magenta(provenance.totalGroupsCount.toString())}`,
-    );
+    for (let i = 0; i < validEntries.length; i++) {
+      const entry = validEntries[i]!;
+      const normalized = entry.normalized;
+      const provenance = getContactProvenance(normalized);
 
-    if (provenance.groups.length > 0) {
-      console.log(pc.bold(pc.underline("\nIDENTIFIED GROUPS:")));
-      provenance.groups.forEach((g, gIdx) => {
+      if (
+        !provenance ||
+        (provenance.groups.length === 0 &&
+          provenance.rooms.length === 0 &&
+          provenance.lists.length === 0)
+      ) {
         console.log(
-          `  ${pc.bold(`${gIdx + 1}.`)} ${formatProvenanceGroupItem(g)}`,
+          pc.yellow(
+            `\nNo provenance records found for contact: ${formatPhoneNumber(normalized)} (${normalized})\n`,
+          ),
         );
-      });
-    }
+        continue;
+      }
 
-    console.log(pc.bold(pc.underline("\nROOMS:")));
-    if (provenance.rooms.length > 0) {
-      provenance.rooms.forEach((r) => {
-        console.log(`  • ${pc.green(r)}`);
-        const matchingGroups = provenance.groups.filter((g) =>
-          g.rooms?.includes(r),
-        );
-        if (matchingGroups.length > 0) {
-          matchingGroups.forEach((g) => {
-            const comm = g.communityName
-              ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} `
-              : "";
-            console.log(`    • ${comm}${g.subject}`);
-          });
-        } else {
-          console.log(`    • ${pc.dim("(Present via list only)")}`);
-        }
-      });
-    } else {
-      console.log(pc.dim("  (None)"));
-    }
+      console.log(pc.cyan("\n" + "=".repeat(66)));
+      console.log(
+        pc.bold(
+          pc.cyan(
+            `📱 CONTACT SOURCE REPORT: ${formatPhoneNumber(normalized)} (${normalized})`,
+          ),
+        ),
+      );
+      console.log("=".repeat(66));
+      console.log(
+        `${pc.bold("Total Groups Identified In:")} ${pc.magenta(provenance.totalGroupsCount.toString())}`,
+      );
 
-    if (provenance.lists.length > 0) {
-      console.log(pc.bold(pc.underline("\nPRESENT IN LISTS:")));
-      provenance.lists.forEach((l) => {
-        console.log(`  • ${pc.green(l)}`);
-      });
+      if (provenance.groups.length > 0) {
+        console.log(pc.bold(pc.underline("\nIDENTIFIED GROUPS:")));
+        provenance.groups.forEach((g, gIdx) => {
+          console.log(
+            `  ${pc.bold(`${gIdx + 1}.`)} ${formatProvenanceGroupItem(g)}`,
+          );
+        });
+      }
+
+      console.log(pc.bold(pc.underline("\nROOMS:")));
+      if (provenance.rooms.length > 0) {
+        provenance.rooms.forEach((r) => {
+          console.log(`  • ${pc.green(r)}`);
+          const matchingGroups = provenance.groups.filter((g) =>
+            g.rooms?.includes(r),
+          );
+          if (matchingGroups.length > 0) {
+            matchingGroups.forEach((g) => {
+              const comm = g.communityName
+                ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} `
+                : "";
+              console.log(`    • ${comm}${g.subject}`);
+            });
+          } else {
+            console.log(`    • ${pc.dim("(Present via list only)")}`);
+          }
+        });
+      } else {
+        console.log(pc.dim("  (None)"));
+      }
+
+      if (provenance.lists.length > 0) {
+        console.log(pc.bold(pc.underline("\nPRESENT IN LISTS:")));
+        provenance.lists.forEach((l) => {
+          console.log(`  • ${pc.green(l)}`);
+        });
+      }
+      console.log("\n" + "=".repeat(66) + "\n");
     }
-    console.log("\n" + "=".repeat(66) + "\n");
   });
 
 /**

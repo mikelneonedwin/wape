@@ -85,6 +85,7 @@ Inspect any Nigerian phone number to view all WhatsApp groups, parent communitie
 ```bash
 # Inspect contact origins
 wape source 08012345678
+wape source 08012345678 08098765432
 ```
 
 ---
