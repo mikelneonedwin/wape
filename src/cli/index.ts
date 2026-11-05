@@ -83,6 +83,7 @@ import {
   saveAppConfig,
   saveLinks,
   saveNotedComparison,
+  searchOneoffGroups,
   type AppConfig,
   type RecordProvenanceGroupItem,
   type Room,
@@ -1283,6 +1284,148 @@ oneoffCmd
     "Print the total count of matching messages rather than printing the results",
   )
   .action(handleChatSearch);
+
+/**
+ * One-off Groups Command Group
+ */
+const oneoffGroupsCmd = oneoffCmd
+  .command("groups [query]")
+  .alias("group")
+  .description("List and search WhatsApp groups scanned from one-off backups")
+  .option("-l, --limit <number>", "Limit the number of results returned")
+  .option(
+    "--rank",
+    "Sort groups by member count descending instead of scan date",
+  )
+  .action((query?: string, options?: { limit?: string; rank?: boolean }) => {
+    handleOneoffGroupSearch(query, options);
+  });
+
+function handleOneoffGroupSearch(
+  query?: string,
+  options?: { limit?: string; rank?: boolean },
+) {
+  const limitNum = options?.limit ? parseInt(options.limit, 10) : undefined;
+  const results = searchOneoffGroups(query, {
+    limit: limitNum,
+    rank: options?.rank,
+  });
+
+  if (results.length === 0) {
+    console.log(
+      pc.yellow(
+        `\nNo one-off groups found${query ? ` matching '${query}'` : ""}.\n`,
+      ),
+    );
+    return;
+  }
+
+  const allRooms = getRooms();
+  const roomByJid = new Map<string, string[]>();
+  const subjectsToRooms = new Map<string, string[]>();
+
+  for (const room of allRooms) {
+    const rName =
+      room.name && room.name !== room.id
+        ? `${room.id} (${room.name})`
+        : room.id;
+
+    for (const rawId of room.groupIds ?? room.groupJidRowIds ?? []) {
+      const idStr = String(rawId).toLowerCase();
+      const list = roomByJid.get(idStr) ?? [];
+      if (!list.includes(rName)) list.push(rName);
+      roomByJid.set(idStr, list);
+
+      if (!idStr.includes("@")) {
+        const gUs = `${idStr}@g.us`;
+        const l1 = roomByJid.get(gUs) ?? [];
+        if (!l1.includes(rName)) l1.push(rName);
+        roomByJid.set(gUs, l1);
+      }
+    }
+
+    for (const name of room.groupNames ?? []) {
+      const lower = name.trim().toLowerCase();
+      const list = subjectsToRooms.get(lower) ?? [];
+      if (!list.includes(rName)) list.push(rName);
+      subjectsToRooms.set(lower, list);
+    }
+  }
+
+  console.log(pc.cyan("\n" + "=".repeat(75)));
+  console.log(
+    pc.bold(
+      pc.cyan(
+        `🔍 ONE-OFF GROUPS${query ? `: "${query}"` : ""}${options?.rank ? " (RANKED)" : ""} (${results.length} group${results.length === 1 ? "" : "s"})`,
+      ),
+    ),
+  );
+  console.log("=".repeat(75) + "\n");
+
+  results.forEach((row, idx) => {
+    const num = pc.dim((idx + 1).toString().padStart(3, " ") + ".");
+
+    const comm = row.communityName
+      ? `${pc.cyan(`[🏛️ ${row.communityName}]`)} └─ `
+      : `${pc.dim("[Standalone]")} • `;
+
+    const memberInfo =
+      row.memberCount > 0
+        ? ` ${pc.dim(`(${row.memberCount.toLocaleString()} members)`)}`
+        : "";
+
+    const ownerStr = row.ownerPhone
+      ? ` • Owner: ${formatPhoneNumber(row.ownerPhone)}`
+      : "";
+    const labelsStr = row.labels.length > 0 ? row.labels.join(", ") : "Unknown";
+    const sourceInfo = ` ${pc.magenta(`(One-off: ${labelsStr}${ownerStr})`)}`;
+
+    const jidKey = row.jid.toLowerCase();
+    let matchedRooms = roomByJid.get(jidKey);
+    if (!matchedRooms || matchedRooms.length === 0) {
+      const sMatch = subjectsToRooms.get(row.subject.trim().toLowerCase());
+      if (sMatch && sMatch.length === 1) {
+        matchedRooms = sMatch;
+      }
+    }
+
+    const roomInfo =
+      matchedRooms && matchedRooms.length > 0
+        ? ` ${pc.green(`[${matchedRooms.length === 1 ? `Room: ${matchedRooms[0]}` : `Rooms: ${matchedRooms.join(", ")}`}]`)}`
+        : ` ${pc.dim("[No Room]")}`;
+
+    console.log(
+      `  ${num} ${comm}${row.subject}${memberInfo}${sourceInfo}${roomInfo}`,
+    );
+  });
+
+  console.log("\n" + "=".repeat(75) + "\n");
+}
+
+oneoffGroupsCmd
+  .command("search [query]")
+  .description(
+    "Search for groups scanned from one-off backups by name or parent community",
+  )
+  .option("-l, --limit <number>", "Limit the number of search results returned")
+  .option(
+    "--rank",
+    "Sort groups by member count descending instead of scan date",
+  )
+  .action((query?: string, options?: { limit?: string; rank?: boolean }) => {
+    handleOneoffGroupSearch(query, options);
+  });
+
+oneoffCmd
+  .command("groups-search [query]", { hidden: true })
+  .option("-l, --limit <number>", "Limit the number of search results returned")
+  .option(
+    "--rank",
+    "Sort groups by member count descending instead of scan date",
+  )
+  .action((query?: string, options?: { limit?: string; rank?: boolean }) => {
+    handleOneoffGroupSearch(query, options);
+  });
 
 /**
  * Room Management Commands

@@ -867,6 +867,92 @@ export function recordScanProvenance(options: {
   return { sourceId };
 }
 
+export interface OneoffSearchResultItem {
+  jid: string;
+  subject: string;
+  communityName: string | null;
+  labels: string[];
+  ownerPhone: string | null;
+  scannedAt: number;
+  memberCount: number;
+}
+
+export function searchOneoffGroups(
+  query?: string,
+  options?: { limit?: number; rank?: boolean },
+): OneoffSearchResultItem[] {
+  const db = getWapeDb();
+  const cleanQuery = query?.trim() ?? "";
+
+  let sql = `
+    SELECT 
+      g.jid,
+      g.subject,
+      g.community_name as communityName,
+      GROUP_CONCAT(DISTINCT s.label) as rawLabels,
+      s.owner_phone as ownerPhone,
+      MAX(s.scanned_at) as scannedAt,
+      COUNT(DISTINCT cgs.contact_id) as memberCount
+    FROM groups g
+    JOIN sources s ON s.id = g.source_id
+    LEFT JOIN contact_group_sources cgs ON cgs.group_id = g.id
+    WHERE s.type = 'oneoff'
+  `;
+
+  const params: (string | number)[] = [];
+
+  if (cleanQuery) {
+    sql += ` AND (
+      g.subject LIKE ? COLLATE NOCASE
+      OR (g.community_name IS NOT NULL AND g.community_name LIKE ? COLLATE NOCASE)
+    )`;
+    const wildcard = `%${cleanQuery}%`;
+    params.push(wildcard, wildcard);
+  }
+
+  sql += ` GROUP BY g.jid`;
+
+  if (options?.rank) {
+    sql += ` ORDER BY memberCount DESC, scannedAt DESC, g.subject ASC`;
+  } else {
+    sql += ` ORDER BY scannedAt DESC, g.subject ASC`;
+  }
+
+  if (options?.limit && options.limit > 0) {
+    sql += ` LIMIT ?`;
+    params.push(options.limit);
+  }
+
+  interface RawRow {
+    jid: string;
+    subject: string;
+    communityName: string | null;
+    rawLabels: string | null;
+    ownerPhone: string | null;
+    scannedAt: number;
+    memberCount: number;
+  }
+
+  const rows = db.query(sql).all(...params) as RawRow[];
+  return rows.map((r) => {
+    const labels = r.rawLabels
+      ? r.rawLabels
+          .split(",")
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0)
+      : [];
+    return {
+      jid: r.jid,
+      subject: r.subject,
+      communityName: r.communityName,
+      labels,
+      ownerPhone: r.ownerPhone,
+      scannedAt: r.scannedAt,
+      memberCount: Number(r.memberCount),
+    };
+  });
+}
+
 export function getContactProvenance(phone: string): ContactProvenance | null {
   const normalized = normalizeNigerianPhoneNumber(phone);
   if (!normalized) return null;

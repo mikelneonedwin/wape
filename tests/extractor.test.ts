@@ -430,6 +430,51 @@ describe("Room Store and Management", () => {
     deleteRoom(roomId);
   });
 
+  it("searches and ranks groups scanned via one-off backups", async () => {
+    const { recordScanProvenance, searchOneoffGroups } =
+      await import("../src/services/wape-store");
+
+    recordScanProvenance({
+      type: "oneoff",
+      label: "Unit Test Source Alpha",
+      ownerPhone: "08012345678",
+      groups: [
+        {
+          jid: "120363999001@g.us",
+          subject: "Alpha Tech Community",
+          communityName: "Alpha Network",
+          phones: ["08011111111", "08022222222"],
+        },
+        {
+          jid: "120363999002@g.us",
+          subject: "Alpha Discussion Forum",
+          communityName: null,
+          phones: ["08033333333"],
+        },
+      ],
+    });
+
+    // Search by group subject keyword
+    const matchSubject = searchOneoffGroups("Discussion");
+    expect(matchSubject.some((g) => g.jid === "120363999002@g.us")).toBe(true);
+
+    // Search by parent community name
+    const matchCommunity = searchOneoffGroups("Alpha Network");
+    expect(matchCommunity.some((g) => g.jid === "120363999001@g.us")).toBe(
+      true,
+    );
+
+    // Search with ranking
+    const ranked = searchOneoffGroups("Alpha", { rank: true });
+    const alphaTech = ranked.find((g) => g.jid === "120363999001@g.us");
+    const alphaForum = ranked.find((g) => g.jid === "120363999002@g.us");
+    expect(alphaTech).toBeDefined();
+    expect(alphaForum).toBeDefined();
+    expect(alphaTech!.memberCount).toBeGreaterThanOrEqual(
+      alphaForum!.memberCount,
+    );
+  });
+
   it("saves and loads app config in WAPE_HOME config.json", async () => {
     const originalHome = process.env.WAPE_HOME;
     const testWapeDir = join(tmpdir(), "test_wape_" + Date.now());
