@@ -240,6 +240,10 @@ wape oneoff bundle -k <64-char-hex-key> -t leads
 # Export chat transcript from a one-off backup
 wape oneoff chats export "Design Team" -k <64-char-hex-key> -b /path/to/one-off.crypt15
 wape oneoff chats export 08076488738 -k <64-char-hex-key> --since 3d
+
+# Search messages from a one-off backup
+wape oneoff chats search "chat.whatsapp.com" -k <64-char-hex-key> -b /path/to/one-off.crypt15
+wape oneoff chats search "modools" -k <64-char-hex-key> --since 7d --count
 ```
 
 ---

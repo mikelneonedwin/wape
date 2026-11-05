@@ -113,6 +113,62 @@ interface ChatExportCommandOptions extends ExportFilterOptions {
   key?: string;
 }
 
+interface ChatSearchCommandOptions extends ExportFilterOptions {
+  limit?: string;
+  count?: boolean;
+  backup?: string;
+  key?: string;
+}
+
+async function handleChatSearch(query: string, opts: ChatSearchCommandOptions) {
+  try {
+    const { db } = await loadDbAndGroups(opts?.backup, opts?.key);
+
+    if (opts.count) {
+      const totalCount = await countMessages(db, query, opts);
+      console.log(totalCount);
+      return;
+    }
+
+    const limitNum = opts.limit ? parseInt(opts.limit, 10) : undefined;
+    const results = await searchMessages(db, query, opts, limitNum);
+
+    if (results.length === 0) {
+      console.log(pc.yellow(`\nNo messages found matching '${query}'.\n`));
+      return;
+    }
+
+    console.log(pc.cyan("\n" + "=".repeat(70)));
+    console.log(
+      pc.bold(
+        pc.cyan(
+          `🔍 SEARCH RESULTS FOR: "${query}" (${results.length} match${results.length === 1 ? "" : "es"})`,
+        ),
+      ),
+    );
+    console.log("=".repeat(70) + "\n");
+
+    results.forEach((r, idx) => {
+      const dateStr = new Date(r.timestamp).toLocaleString();
+      console.log(
+        `${pc.bold((idx + 1).toString().padStart(2, " "))}. ${pc.cyan(`[🏛️  ${r.groupName}]`)} • ${pc.yellow(r.senderDisplay)} • ${pc.dim(dateStr)}`,
+      );
+      console.log(
+        `    ${pc.dim("Message:")} ${r.textData.replace(/\n/g, " ")}\n`,
+      );
+    });
+
+    console.log("=".repeat(70) + "\n");
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
 async function handleChatExport(
   target?: string,
   opts?: ChatExportCommandOptions,
@@ -1126,6 +1182,36 @@ oneoffChatsCmd
   )
   .action(handleChatExport);
 
+oneoffChatsCmd
+  .command("search <query>")
+  .description(
+    "Search for messages across WhatsApp groups and chats from a one-off backup",
+  )
+  .requiredOption(
+    "-k, --key <key>",
+    "Decryption key for the one-off backup (required)",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
+  )
+  .option(
+    "--since <duration>",
+    "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
+  )
+  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
+  .option(
+    "--last-month",
+    "Filter messages to only those sent during last month",
+  )
+  .option("-l, --limit <number>", "Limit the number of search results returned")
+  .option(
+    "-c, --count",
+    "Print the total count of matching messages rather than printing the results",
+  )
+  .action(handleChatSearch);
+
 oneoffCmd
   .command("chats-export [target]", { hidden: true })
   .requiredOption(
@@ -1156,6 +1242,33 @@ oneoffCmd
     "Enable fuzzy/partial matching on target name or phone number",
   )
   .action(handleChatExport);
+
+oneoffCmd
+  .command("chats-search <query>", { hidden: true })
+  .requiredOption(
+    "-k, --key <key>",
+    "Decryption key for the one-off backup (required)",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (optional, auto-discovers if omitted)",
+  )
+  .option(
+    "--since <duration>",
+    "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
+  )
+  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
+  .option(
+    "--last-month",
+    "Filter messages to only those sent during last month",
+  )
+  .option("-l, --limit <number>", "Limit the number of search results returned")
+  .option(
+    "-c, --count",
+    "Print the total count of matching messages rather than printing the results",
+  )
+  .action(handleChatSearch);
 
 /**
  * Room Management Commands
@@ -2937,59 +3050,12 @@ chatsCmd
     "-c, --count",
     "Print the total count of matching messages rather than printing the results",
   )
-  .action(
-    async (
-      query: string,
-      opts: ExportFilterOptions & { limit?: string; count?: boolean },
-    ) => {
-      try {
-        const { db } = await loadDbAndGroups();
-
-        if (opts.count) {
-          const totalCount = await countMessages(db, query, opts);
-          console.log(totalCount);
-          return;
-        }
-
-        const limitNum = opts.limit ? parseInt(opts.limit, 10) : undefined;
-        const results = await searchMessages(db, query, opts, limitNum);
-
-        if (results.length === 0) {
-          console.log(pc.yellow(`\nNo messages found matching '${query}'.\n`));
-          return;
-        }
-
-        console.log(pc.cyan("\n" + "=".repeat(70)));
-        console.log(
-          pc.bold(
-            pc.cyan(
-              `🔍 SEARCH RESULTS FOR: "${query}" (${results.length} match${results.length === 1 ? "" : "es"})`,
-            ),
-          ),
-        );
-        console.log("=".repeat(70) + "\n");
-
-        results.forEach((r, idx) => {
-          const dateStr = new Date(r.timestamp).toLocaleString();
-          console.log(
-            `${pc.bold((idx + 1).toString().padStart(2, " "))}. ${pc.cyan(`[🏛️  ${r.groupName}]`)} • ${pc.yellow(r.senderDisplay)} • ${pc.dim(dateStr)}`,
-          );
-          console.log(
-            `    ${pc.dim("Message:")} ${r.textData.replace(/\n/g, " ")}\n`,
-          );
-        });
-
-        console.log("=".repeat(70) + "\n");
-      } catch (error) {
-        console.error(
-          pc.red(
-            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-        process.exit(1);
-      }
-    },
-  );
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleChatSearch);
 
 chatsCmd.action(() => {
   chatsCmd.outputHelp();
