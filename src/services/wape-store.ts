@@ -167,6 +167,7 @@ export function getWapeDb(): Database {
 
   const isNewDb = !existsSync(dbPath);
   const db = new Database(dbPath, { create: true });
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
 
@@ -973,7 +974,7 @@ export function getContactProvenance(phone: string): ContactProvenance | null {
   const allRooms = getRooms();
   for (const group of uniqueGroups) {
     const matched = allRooms
-      .filter((room) => isGroupInRoom(group, room))
+      .filter((room) => isGroupInRoom(group, room, allRooms))
       .map((room) =>
         room.name && room.name !== room.id
           ? `${room.id} (${room.name})`
@@ -1112,6 +1113,7 @@ export function getRoomById(id: string): Room | null {
 export function isGroupInRoom(
   group: { jid: string; subject: string },
   room: Room,
+  allRooms?: Room[],
 ) {
   const groupJid = group.jid.toLowerCase();
   const groupSubject = group.subject.trim().toLowerCase();
@@ -1126,10 +1128,20 @@ export function isGroupInRoom(
   });
   if (idMatch) return true;
 
-  const nameMatch = (room.groupNames ?? []).some(
-    (name) => name.trim().toLowerCase() === groupSubject,
-  );
-  if (nameMatch) return true;
+  // Name match: if multiple rooms share this group subject, match by name alone is ambiguous and unsafe
+  const roomsToCheck = allRooms && allRooms.length > 0 ? allRooms : [room];
+  const countWithSameName = roomsToCheck.filter((r) =>
+    (r.groupNames ?? []).some(
+      (name) => name.trim().toLowerCase() === groupSubject,
+    ),
+  ).length;
+
+  if (countWithSameName === 1) {
+    const nameMatch = (room.groupNames ?? []).some(
+      (name) => name.trim().toLowerCase() === groupSubject,
+    );
+    if (nameMatch) return true;
+  }
 
   try {
     const db = getWapeDb();
@@ -1141,11 +1153,10 @@ export function isGroupInRoom(
            AND (
              rg.group_id = ?
              OR g.jid = ?
-             OR (LOWER(rg.group_name) = ? AND LOWER(g.subject) = ?)
            )
          LIMIT 1`,
       )
-      .get(room.id, group.jid, group.jid, groupSubject, groupSubject);
+      .get(room.id, group.jid, group.jid);
     if (row) return true;
   } catch {
     // Database fallback
@@ -1185,6 +1196,62 @@ export function saveRoom(room: Room): void {
       );
     }
   })();
+}
+
+export function clearListContacts(listName: string): {
+  success: boolean;
+  clearedCount: number;
+} {
+  const db = getWapeDb();
+  const clean = normalizeListName(listName);
+  const listRow = db
+    .query(`SELECT id FROM lists WHERE name = ?`)
+    .get(clean) as { id: number } | null;
+
+  if (!listRow) {
+    return { success: false, clearedCount: 0 };
+  }
+
+  const countRow = db
+    .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+    .get(listRow.id) as { cnt: number };
+  const clearedCount = countRow ? countRow.cnt : 0;
+
+  const now = Date.now();
+  db.transaction(() => {
+    db.run(`DELETE FROM list_contacts WHERE list_id = ?`, [listRow.id]);
+    db.run(`UPDATE lists SET updated_at = ? WHERE id = ?`, [now, listRow.id]);
+  })();
+
+  return { success: true, clearedCount };
+}
+
+export function clearRoomGroups(roomId: string): {
+  success: boolean;
+  clearedGroupsCount: number;
+} {
+  const db = getWapeDb();
+  const cleanId = roomId.trim().toLowerCase();
+  const roomRow = db
+    .query(`SELECT id FROM rooms WHERE id = ?`)
+    .get(cleanId) as { id: string } | null;
+
+  if (!roomRow) {
+    return { success: false, clearedGroupsCount: 0 };
+  }
+
+  const countRow = db
+    .query(`SELECT COUNT(*) as cnt FROM room_groups WHERE room_id = ?`)
+    .get(cleanId) as { cnt: number };
+  const clearedGroupsCount = countRow ? countRow.cnt : 0;
+
+  const now = Date.now();
+  db.transaction(() => {
+    db.run(`DELETE FROM room_groups WHERE room_id = ?`, [cleanId]);
+    db.run(`UPDATE rooms SET updated_at = ? WHERE id = ?`, [now, cleanId]);
+  })();
+
+  return { success: true, clearedGroupsCount };
 }
 
 export function deleteRoom(id: string): boolean {

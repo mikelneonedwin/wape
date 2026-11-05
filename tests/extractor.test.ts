@@ -381,6 +381,55 @@ describe("Room Store and Management", () => {
     expect(getRoomById("renamed-room-1")).toBeNull();
   });
 
+  it("resets room groups and clears contact list properly", async () => {
+    const {
+      saveRoom,
+      getRoomById,
+      deleteRoom,
+      saveContactsToList,
+      getContactsFromList,
+      clearListContacts,
+      clearRoomGroups,
+    } = await import("../src/services/wape-store");
+
+    const roomId = "test-reset-room";
+    saveRoom({
+      id: roomId,
+      groupIds: ["12036301@g.us", "12036302@g.us"],
+      groupNames: ["Group A", "Group B"],
+      targetList: roomId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    saveContactsToList(
+      roomId,
+      new Set(["08012345678", "08098765432", "07011223344"]),
+    );
+
+    const roomBefore = getRoomById(roomId);
+    expect(roomBefore).not.toBeNull();
+    expect(roomBefore?.groupIds?.length).toBe(2);
+    expect(getContactsFromList(roomId).size).toBe(3);
+
+    // Clear room groups
+    const groupRes = clearRoomGroups(roomId);
+    expect(groupRes.success).toBe(true);
+    expect(groupRes.clearedGroupsCount).toBe(2);
+
+    const roomAfterGroupClear = getRoomById(roomId);
+    expect(roomAfterGroupClear?.groupIds?.length).toBe(0);
+
+    // Clear list contacts
+    const listRes = clearListContacts(roomId);
+    expect(listRes.success).toBe(true);
+    expect(listRes.clearedCount).toBe(3);
+    expect(getContactsFromList(roomId).size).toBe(0);
+
+    // Clean up
+    deleteRoom(roomId);
+  });
+
   it("saves and loads app config in WAPE_HOME config.json", async () => {
     const originalHome = process.env.WAPE_HOME;
     const testWapeDir = join(tmpdir(), "test_wape_" + Date.now());
@@ -1574,6 +1623,30 @@ describe("Chat Exporter & Search Service", () => {
     );
     expect(resFromTo.startTime).toBe(new Date("2026-01-01").getTime());
     expect(resFromTo.endTime).toBeDefined();
+
+    // --from as single-element array (Commander variadic with one value)
+    const resSingleArr = parseDateRange({ from: ["2026-03-15"] }, fixedNow);
+    expect(resSingleArr.startTime).toBe(new Date("2026-03-15").getTime());
+    expect(resSingleArr.endTime).toBeUndefined();
+
+    // --from 2020-10-01 to 2020-10-30 (inline to via variadic)
+    const resInlineTo = parseDateRange(
+      { from: ["2020-10-01", "to", "2020-10-30"] },
+      fixedNow,
+    );
+    expect(resInlineTo.startTime).toBe(new Date("2020-10-01").getTime());
+    const expectedEnd = new Date("2020-10-30");
+    expectedEnd.setHours(23, 59, 59, 999);
+    expect(resInlineTo.endTime).toBe(expectedEnd.getTime());
+
+    // Explicit --to overrides inline to
+    const resExplicitTo = parseDateRange(
+      { from: ["2020-10-01", "to", "2020-10-30"], to: "2020-12-31" },
+      fixedNow,
+    );
+    const expectedExplicitEnd = new Date("2020-12-31");
+    expectedExplicitEnd.setHours(23, 59, 59, 999);
+    expect(resExplicitTo.endTime).toBe(expectedExplicitEnd.getTime());
 
     // --last-month
     const resLastMonth = parseDateRange({ lastMonth: true }, fixedNow);

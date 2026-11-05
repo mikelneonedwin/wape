@@ -3,7 +3,7 @@ import { normalizeNigerianPhoneNumber } from "./phone";
 
 export interface ExportFilterOptions {
   since?: string;
-  from?: string;
+  from?: string | string[];
   to?: string;
   lastMonth?: boolean;
   last?: number | string;
@@ -104,13 +104,47 @@ export function parseDateRange(
   }
 
   if (opts.from) {
-    const parsed = new Date(opts.from.trim());
+    // Support both string and array forms. The array form comes from
+    // Commander's variadic --from <dates...> and allows inline "to":
+    //   --from 2020-10-01 to 2020-10-30
+    // which Commander delivers as ["2020-10-01", "to", "2020-10-30"].
+    let fromDate: string;
+    let inlineTo: string | undefined;
+
+    if (Array.isArray(opts.from)) {
+      fromDate = opts.from[0] ?? "";
+      if (
+        opts.from.length === 3 &&
+        opts.from[1]?.toLowerCase() === "to" &&
+        opts.from[2]
+      ) {
+        inlineTo = opts.from[2];
+      }
+    } else {
+      fromDate = opts.from;
+    }
+
+    const parsed = new Date(fromDate.trim());
     if (isNaN(parsed.getTime())) {
       throw new Error(
-        `Invalid --from date: '${opts.from}'. Expected format YYYY-MM-DD.`,
+        `Invalid --from date: '${fromDate}'. Expected format YYYY-MM-DD.`,
       );
     }
     startTime = parsed.getTime();
+
+    // Inline "to" sets endTime only when no explicit --to flag was provided
+    if (inlineTo && !opts.to) {
+      const parsedTo = new Date(inlineTo.trim());
+      if (isNaN(parsedTo.getTime())) {
+        throw new Error(
+          `Invalid inline to date: '${inlineTo}'. Expected format YYYY-MM-DD.`,
+        );
+      }
+      if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(inlineTo.trim())) {
+        parsedTo.setHours(23, 59, 59, 999);
+      }
+      endTime = parsedTo.getTime();
+    }
   }
 
   if (opts.to) {

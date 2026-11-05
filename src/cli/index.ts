@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { input, select } from "@inquirer/prompts";
 import { Command } from "commander";
@@ -64,6 +64,8 @@ import {
 } from "./ignore-manager";
 import { searchCheckbox } from "./search-checkbox";
 import {
+  clearListContacts,
+  clearRoomGroups,
   deleteRoom,
   getAllKnownLists,
   getAppConfig,
@@ -1165,7 +1167,10 @@ oneoffChatsCmd
     "--since <duration>",
     "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter messages starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
   .option(
     "--last-month",
@@ -1199,7 +1204,10 @@ oneoffChatsCmd
     "--since <duration>",
     "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter messages starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
   .option(
     "--last-month",
@@ -1226,7 +1234,10 @@ oneoffCmd
     "--since <duration>",
     "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter messages starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
   .option(
     "--last-month",
@@ -1257,7 +1268,10 @@ oneoffCmd
     "--since <duration>",
     "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter messages starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
   .option(
     "--last-month",
@@ -1635,6 +1649,64 @@ roomCmd
   });
 
 roomCmd
+  .command("reset [ids...]")
+  .description("Clear groups and/or contact list from one or more rooms")
+  .option("-y, --yes", "Skip confirmation prompt")
+  .action(async (ids?: string[], _options?: { yes?: boolean }) => {
+    const rooms = getRooms();
+    if (rooms.length === 0) {
+      console.log(pc.yellow("\nNo rooms found to reset.\n"));
+      return;
+    }
+
+    let targetIds: string[] = ids ?? [];
+    if (targetIds.length === 0) {
+      if (!process.stdout.isTTY) {
+        console.error(
+          pc.red("\n❌ Error: Please specify at least one room ID to reset.\n"),
+        );
+        process.exit(1);
+      }
+      const picked = await select<string>({
+        message: "Select room to reset:",
+        choices: rooms.map((r) => {
+          const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+          return {
+            name: `${pc.bold(r.id)} (${count} groups, list: ${r.targetList ?? r.id})`,
+            value: r.id,
+          };
+        }),
+      });
+      targetIds = [picked];
+    }
+
+    for (const rid of targetIds) {
+      const room = getRoomById(rid);
+      if (!room) {
+        console.error(
+          pc.red(
+            `\n❌ Error: Room '${rid}' not found. Use 'wape rooms list' to see all rooms.\n`,
+          ),
+        );
+        continue;
+      }
+
+      const listName = room.targetList
+        ? normalizeListName(room.targetList)
+        : room.id;
+      const groupRes = clearRoomGroups(room.id);
+      const listRes = clearListContacts(listName);
+
+      console.log(
+        pc.green(
+          `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
+        ),
+      );
+    }
+    console.log("");
+  });
+
+roomCmd
   .command("path <id>")
   .description("Get the contact list name for a room")
   .action((id: string) => {
@@ -1903,7 +1975,7 @@ async function executeCompare({
           console.log(`  ${pc.cyan(`Room '${room.id}':`)}`);
           const roomGroups =
             provenance?.groups.filter((group) => {
-              const inRoom = isGroupInRoom(group, room);
+              const inRoom = isGroupInRoom(group, room, targetRooms);
               if (inRoom) matchedGroups.add(group.jid);
               return inRoom;
             }) ?? [];
@@ -2937,7 +3009,10 @@ chatsCmd
     "--since <duration>",
     "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter messages starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
   .option(
     "--last-month",
@@ -2968,7 +3043,10 @@ chatsCmd
     "--since <duration>",
     "Filter links saved since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter links saved starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter links saved starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter links saved up to date (YYYY-MM-DD)")
   .option("--last-month", "Filter links saved during last month")
   .option(
@@ -3039,7 +3117,10 @@ chatsCmd
     "--since <duration>",
     "Filter messages since duration (e.g. 30m, 3d, 1w, 2h)",
   )
-  .option("--from <date>", "Filter messages starting from date (YYYY-MM-DD)")
+  .option(
+    "--from <dates...>",
+    "Filter messages starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
   .option("--to <date>", "Filter messages up to date (YYYY-MM-DD)")
   .option(
     "--last-month",
@@ -3274,6 +3355,177 @@ program
   });
 
 /**
+ * Reset Command (Lists or Rooms)
+ */
+program
+  .command("reset [targets...]")
+  .description("Reset (empty) one or more contact lists or rooms")
+  .option("--room", "Target a room instead of a list")
+  .option("--list", "Target a list instead of a room")
+  .action(
+    async (
+      targets?: string[],
+      options?: { room?: boolean; list?: boolean },
+    ) => {
+      const inputs = targets ? [...targets] : [];
+
+      if (inputs.length === 0) {
+        if (!process.stdout.isTTY) {
+          console.error(
+            pc.red(
+              "\n❌ Error: Please specify at least one list or room name to reset.\n",
+            ),
+          );
+          process.exit(1);
+        }
+
+        // Interactive prompt to select what to reset
+        const allLists = getAllKnownLists();
+        const allRooms = getRooms();
+
+        type TargetChoice = {
+          type: "list" | "room";
+          name: string;
+          label: string;
+        };
+        const choices: { name: string; value: TargetChoice }[] = [];
+
+        allLists.forEach((l) => {
+          choices.push({
+            name: `📋 List: ${l.name} (${l.count.toLocaleString()} contacts)`,
+            value: {
+              type: "list",
+              name: l.isGlobal ? l.name.replace(/ \(Global\)$/, "") : l.name,
+              label: l.name,
+            },
+          });
+        });
+
+        allRooms.forEach((r) => {
+          const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+          choices.push({
+            name: `🏠 Room: ${r.id} (${count} groups, list: ${r.targetList ?? r.id})`,
+            value: { type: "room", name: r.id, label: r.id },
+          });
+        });
+
+        if (choices.length === 0) {
+          console.log(pc.yellow("\nNo lists or rooms found to reset.\n"));
+          return;
+        }
+
+        const selected = await select<TargetChoice>({
+          message: "Select list or room to reset:",
+          choices,
+        });
+
+        if (selected.type === "room") {
+          const room = getRoomById(selected.name);
+          if (room) {
+            const listName = room.targetList
+              ? normalizeListName(room.targetList)
+              : room.id;
+            const groupRes = clearRoomGroups(room.id);
+            const listRes = clearListContacts(listName);
+            console.log(
+              pc.green(
+                `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.\n`,
+              ),
+            );
+          }
+        } else {
+          const res = clearListContacts(selected.name);
+          console.log(
+            pc.green(
+              `\n🧹 Reset list '${selected.name}': cleared ${res.clearedCount.toLocaleString()} contacts.\n`,
+            ),
+          );
+        }
+        return;
+      }
+
+      for (const target of inputs) {
+        const clean = target.trim();
+        if (!clean) continue;
+
+        if (options?.room) {
+          const room = getRoomById(clean);
+          if (!room) {
+            console.error(
+              pc.red(
+                `\n❌ Error: Room '${clean}' not found. Use 'wape rooms list' to see all rooms.\n`,
+              ),
+            );
+            continue;
+          }
+          const listName = room.targetList
+            ? normalizeListName(room.targetList)
+            : room.id;
+          const groupRes = clearRoomGroups(room.id);
+          const listRes = clearListContacts(listName);
+          console.log(
+            pc.green(
+              `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
+            ),
+          );
+          continue;
+        }
+
+        if (options?.list) {
+          const res = clearListContacts(clean);
+          if (!res.success) {
+            console.error(
+              pc.red(
+                `\n❌ Error: List '${clean}' not found. Use 'wape lists' to see all lists.\n`,
+              ),
+            );
+            continue;
+          }
+          console.log(
+            pc.green(
+              `\n🧹 Reset list '${clean}': cleared ${res.clearedCount.toLocaleString()} contacts.`,
+            ),
+          );
+          continue;
+        }
+
+        // Neither flag explicitly passed: check if matching room exists first
+        const room = getRoomById(clean);
+        if (room) {
+          const listName = room.targetList
+            ? normalizeListName(room.targetList)
+            : room.id;
+          const groupRes = clearRoomGroups(room.id);
+          const listRes = clearListContacts(listName);
+          console.log(
+            pc.green(
+              `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
+            ),
+          );
+          continue;
+        }
+
+        // Check if matching list exists
+        const listRes = clearListContacts(clean);
+        if (listRes.success) {
+          console.log(
+            pc.green(
+              `\n🧹 Reset list '${clean}': cleared ${listRes.clearedCount.toLocaleString()} contacts.`,
+            ),
+          );
+        } else {
+          console.error(
+            pc.red(
+              `\n❌ Error: No room or list found matching '${clean}'. Use 'wape rooms list' or 'wape lists'.\n`,
+            ),
+          );
+        }
+      }
+      console.log("");
+    },
+  );
+
+/**
  * Contact Source / Provenance Command
  */
 const sourceCmd = program
@@ -3282,13 +3534,29 @@ const sourceCmd = program
     "Display all groups, communities, backup sources, and lists one or more contacts have been identified in",
   )
   .action((numbers?: string[]) => {
-    if (!numbers || numbers.length === 0) {
+    let inputs = numbers ? [...numbers] : [];
+
+    // If no numbers were passed as CLI arguments, check if stdin has piped data
+    if (inputs.length === 0 && !process.stdin.isTTY) {
+      try {
+        const stdinData = readFileSync(0, "utf-8");
+        const lines = stdinData
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        inputs = lines;
+      } catch {
+        // Fall back gracefully if reading stdin fails
+      }
+    }
+
+    if (inputs.length === 0) {
       console.log(sourceCmd.helpInformation());
       return;
     }
 
     const validEntries: { raw: string; normalized: string }[] = [];
-    for (const num of numbers) {
+    for (const num of inputs) {
       const clean = num.trim();
       if (!clean) continue;
       const normalized = normalizeNigerianPhoneNumber(clean);
