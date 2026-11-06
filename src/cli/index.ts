@@ -578,8 +578,16 @@ program
   )
   .option("-k, --key <key>", "Decryption key for encrypted backups")
   .option(
-    "-t, --target-list <nameOrPath>",
+    "-l, --label <label>",
+    "Label for ad-hoc or one-off backup provenance (e.g. Alice - Work Phone)",
+  )
+  .option(
+    "-t, --to <nameOrPath>",
     "Direct output to a specific list file or name",
+  )
+  .option(
+    "--target-list <nameOrPath>",
+    "Direct output to a specific list file or name (alias for --to)",
   )
   .option("--main", "Force output to global main list")
   .option("--lock", "Force output to global lock list")
@@ -590,6 +598,8 @@ program
       options?: {
         backup?: string;
         key?: string;
+        label?: string;
+        to?: string;
         targetList?: string;
         main?: boolean;
         lock?: boolean;
@@ -608,6 +618,16 @@ program
           console.log(pc.yellow("No group chats found in the backup."));
           return;
         }
+
+        const isOneoff = Boolean(options?.key || options?.label);
+        const detectedOwner = isOneoff
+          ? await detectWhatsAppOwnerPhone(db)
+          : null;
+        const backupLabel =
+          options?.label?.trim() ??
+          (isOneoff ? "One-off Backup" : "Primary Backup");
+        const scanType = isOneoff ? "oneoff" : "primary";
+        const targetListArg = options?.to ?? options?.targetList;
 
         const rooms = getRooms();
         let roomToScan: Room | null = null;
@@ -656,7 +676,10 @@ program
           await scanSingleRoom(db, groups, roomToScan, {
             main: options?.main,
             lock: options?.lock,
-            targetList: options?.targetList,
+            targetList: targetListArg,
+            scanType,
+            sourceLabel: backupLabel,
+            ownerPhone: detectedOwner,
           });
         } else {
           const ignoredJids = getIgnoredJidSet();
@@ -691,8 +714,8 @@ program
           const selectedLabels = selectedGroups.map((g) => formatGroupLabel(g));
 
           let forcedList: string | undefined;
-          if (options?.targetList) {
-            forcedList = normalizeListName(options.targetList);
+          if (targetListArg) {
+            forcedList = normalizeListName(targetListArg);
           } else if (options?.main) {
             forcedList = "main";
           } else if (options?.lock) {
@@ -701,8 +724,9 @@ program
 
           await executeGroupExport(db, targetJids, selectedLabels, {
             forcedTargetList: forcedList,
-            scanType: "primary",
-            sourceLabel: "Primary Backup",
+            scanType,
+            sourceLabel: backupLabel,
+            ownerPhone: detectedOwner,
             allGroups: groups,
           });
         }
@@ -718,12 +742,12 @@ program
   );
 
 /**
- * One-off Command Group
+ * One-off Command Group (Deprecated: preserved for backwards compatibility)
  */
 const oneoffCmd = program
-  .command("oneoff")
+  .command("oneoff", { hidden: true })
   .description(
-    "Scan a one-off WhatsApp backup database using a one-off decryption key without touching config.json",
+    "Scan a one-off WhatsApp backup database (legacy alias: prefer passing -k and -b directly to root commands)",
   )
   .action(() => {
     oneoffCmd.outputHelp();
@@ -1432,10 +1456,12 @@ oneoffCmd
  */
 const roomCmd = program
   .command("rooms")
+  .alias("room")
   .description("Manage wape rooms (collections of WhatsApp groups)");
 
 roomCmd
-  .command("list", { isDefault: false })
+  .command("list", { isDefault: true })
+  .alias("ls")
   .description("List all configured rooms")
   .action(() => {
     printRoomsTable(getRooms());
@@ -1443,7 +1469,8 @@ roomCmd
   });
 
 roomCmd
-  .command("info [id]")
+  .command("show [id]")
+  .alias("info")
   .description(
     "Show details of a room, including all groups and contact count in its list",
   )
@@ -1498,7 +1525,7 @@ roomCmd
   });
 
 roomCmd
-  .command("groups [id]")
+  .command("groups [id]", { hidden: true })
   .description("Print out the WhatsApp groups configured in a room")
   .action(async (id?: string) => {
     try {
@@ -1681,7 +1708,7 @@ async function executeRoomAudit(
 }
 
 roomCmd
-  .command("audit [id]")
+  .command("audit [id]", { hidden: true })
   .description(
     "Audit WhatsApp groups in a room for non-Nigerian demographic majority (>50%)",
   )
@@ -1709,6 +1736,7 @@ roomCmd
 
 roomCmd
   .command("new <id>")
+  .alias("create")
   .description("Create a new room with the specified ID interactively")
   .action(async (id: string) => {
     try {
@@ -1743,6 +1771,7 @@ roomCmd
 
 roomCmd
   .command("remove [id]")
+  .alias("rm")
   .description("Remove groups from an existing room")
   .action(async (id?: string) => {
     try {
@@ -1792,7 +1821,7 @@ roomCmd
   });
 
 roomCmd
-  .command("reset [ids...]")
+  .command("reset [ids...]", { hidden: true })
   .description("Clear groups and/or contact list from one or more rooms")
   .option("-y, --yes", "Skip confirmation prompt")
   .action(async (ids?: string[], _options?: { yes?: boolean }) => {
@@ -1869,7 +1898,7 @@ roomCmd
   });
 
 roomCmd
-  .command("patch <id> <files...>")
+  .command("patch <id> <files...>", { hidden: true })
   .description(
     "Import and merge contacts from external text/vCard (.vcf) file(s) into a room's list",
   )
@@ -1941,7 +1970,7 @@ roomCmd
   });
 
 roomCmd
-  .command("unpatch <id> <files...>")
+  .command("unpatch <id> <files...>", { hidden: true })
   .description(
     "Remove contacts present in external text/vCard (.vcf) file(s) from a room's list",
   )
@@ -2018,7 +2047,7 @@ roomCmd
   });
 
 roomCmd
-  .command("scan [ids...]")
+  .command("scan [ids...]", { hidden: true })
   .description("Scan all configured rooms, or specific rooms by ID")
   .option("--main", "Force export to global main list")
   .option("--lock", "Force export to global lock list")
@@ -2246,7 +2275,7 @@ async function executeBundle(
 }
 
 roomCmd
-  .command("compare [rooms...]")
+  .command("compare [rooms...]", { hidden: true })
   .description(
     "Find and list common contacts across rooms in XXXX XXX XXXX format",
   )
@@ -2323,7 +2352,7 @@ roomCmd
   });
 
 roomCmd
-  .command("bundle [rooms...]")
+  .command("bundle [rooms...]", { hidden: true })
   .description(
     "Compare rooms to extract only new common contacts alongside new WhatsApp group invite links, and copy both to clipboard",
   )
@@ -2477,12 +2506,22 @@ program
     "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
   )
   .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .option(
+    "-l, --label <label>",
+    "Label for ad-hoc or one-off backup provenance (e.g. Alice - Work Phone)",
+  )
+  .option(
+    "-t, --to <nameOrPath>",
+    "Direct output to a specific list file or name",
+  )
   .action(
     async (
       targets?: string[],
       options?: {
         backup?: string;
         key?: string;
+        label?: string;
+        to?: string;
       },
     ) => {
       try {
@@ -2543,597 +2582,1126 @@ program
   );
 
 /**
- * Stats Command
+ * Stats Handler & Command
  */
+function handleStats(targets?: string[]) {
+  try {
+    if (!targets || targets.length === 0) {
+      // Global inventory across all lists
+      const globalSummary = getGlobalInventory();
+
+      console.log(pc.cyan(`\n📊 wape Lists Stats Summary\n`));
+      console.log("=".repeat(65));
+      console.log(
+        `${pc.bold("List Name".padEnd(35))} ${pc.bold("Contacts Count")}`,
+      );
+      console.log("-".repeat(65));
+
+      globalSummary.lists.forEach((list) => {
+        console.log(
+          `${pc.white(list.name.padEnd(35))} ${pc.yellow(list.count.toLocaleString().padStart(12))}`,
+        );
+      });
+
+      console.log("=".repeat(65));
+      console.log(
+        `${pc.bold(pc.green("Grand Unique Total (All Lists Combined):"))} ${pc.bold(pc.green(globalSummary.grandUniqueTotal.toLocaleString()))}`,
+      );
+      console.log("=".repeat(65) + "\n");
+      return;
+    }
+
+    if (targets.length === 1 && targets[0]) {
+      // Stats for a single list
+      const target = resolveTargetToList(targets[0]);
+      const contacts = readContactsFromFile(target.filePath);
+
+      console.log(pc.cyan("\n" + "=".repeat(65)));
+      console.log(pc.bold(pc.cyan(`📊 STATS: ${target.label.toUpperCase()}`)));
+      console.log("=".repeat(65));
+      console.log(
+        `${pc.bold("Target:")}               ${pc.green(target.label)}`,
+      );
+      console.log(
+        `${pc.bold("Total Unique Contacts:")} ${pc.magenta(contacts.size.toLocaleString())}`,
+      );
+      console.log("=".repeat(65) + "\n");
+      return;
+    }
+
+    // Comparison across multiple targets
+    const filePaths = targets.map((t) => resolveTargetToList(t).filePath);
+    const labels = targets.map((t) => resolveTargetToList(t).label);
+
+    if (filePaths.length === 2 && filePaths[0] && filePaths[1]) {
+      const stats = getInventoryStats(filePaths[0], filePaths[1]);
+      const [labelA, labelB] = labels;
+
+      console.log(pc.cyan("\n" + "=".repeat(65)));
+      console.log(pc.bold(pc.cyan("📊 TWO-WAY LIST COMPARISON")));
+      console.log("=".repeat(65));
+      console.log(
+        `  ${pc.bold(labelA?.padEnd(28) ?? "Target A")}: ${pc.yellow(stats.countA.toLocaleString().padStart(8))} contacts`,
+      );
+      console.log(
+        `  ${pc.bold(labelB?.padEnd(28) ?? "Target B")}: ${pc.yellow(stats.countB.toLocaleString().padStart(8))} contacts`,
+      );
+      console.log("-".repeat(65));
+      console.log(
+        `  ${pc.bold(pc.green("Common to Both (Intersection):"))}  ${pc.bold(pc.green(stats.commonCount.toLocaleString().padStart(8)))} contacts`,
+      );
+      console.log(
+        `  ${pc.bold(pc.magenta("Total Unique Combined (Union):"))}  ${pc.bold(pc.magenta(stats.unionCount.toLocaleString().padStart(8)))} contacts`,
+      );
+      console.log("=".repeat(65) + "\n");
+      return;
+    }
+
+    // Multi-way comparison (3+ lists)
+    const common = getCommonContacts(filePaths);
+    const allUnique = new Set<string>();
+    filePaths.forEach((f) => {
+      const contacts = readContactsFromFile(f);
+      contacts.forEach((c) => allUnique.add(c));
+    });
+
+    console.log(pc.cyan("\n" + "=".repeat(65)));
+    console.log(
+      pc.bold(pc.cyan(`📊 MULTI-LIST COMPARISON (${filePaths.length} lists)`)),
+    );
+    console.log("=".repeat(65));
+    filePaths.forEach((f, idx) => {
+      const contacts = readContactsFromFile(f);
+      console.log(
+        `  ${pc.bold((labels[idx] ?? "").padEnd(28))}: ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts`,
+      );
+    });
+    console.log("-".repeat(65));
+    console.log(
+      `  ${pc.bold(pc.green("Common to ALL Selected Lists:"))}    ${pc.bold(pc.green(common.length.toLocaleString().padStart(8)))} contacts`,
+    );
+    console.log(
+      `  ${pc.bold(pc.magenta("Total Unique Combined (Union):"))}  ${pc.bold(pc.magenta(allUnique.size.toLocaleString().padStart(8)))} contacts`,
+    );
+    console.log("=".repeat(65) + "\n");
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
 program
   .command("stats [targets...]")
   .description(
     "Display stats: global overview or detailed comparison across targets",
   )
-  .action((targets?: string[]) => {
-    try {
-      if (!targets || targets.length === 0) {
-        // Global inventory across all lists
-        const globalSummary = getGlobalInventory();
+  .action(handleStats);
 
-        console.log(pc.cyan(`\n📊 wape Lists Stats Summary\n`));
-        console.log("=".repeat(65));
-        console.log(
-          `${pc.bold("List Name".padEnd(35))} ${pc.bold("Contacts Count")}`,
-        );
-        console.log("-".repeat(65));
+/**
+ * Patch / Import Handler
+ */
+function handlePatch(
+  args: string[] = [],
+  opts: { main?: boolean; lock?: boolean } = {},
+) {
+  try {
+    let targetLabel = "";
+    let targetListPath = "";
+    let fileArgs: string[] = [];
 
-        globalSummary.lists.forEach((list) => {
-          console.log(
-            `${pc.white(list.name.padEnd(35))} ${pc.yellow(list.count.toLocaleString().padStart(12))}`,
-          );
-        });
-
-        console.log("=".repeat(65));
-        console.log(
-          `${pc.bold(pc.green("Grand Unique Total (All Lists Combined):"))} ${pc.bold(pc.green(globalSummary.grandUniqueTotal.toLocaleString()))}`,
-        );
-        console.log("=".repeat(65) + "\n");
-        return;
-      }
-
-      if (targets.length === 1 && targets[0]) {
-        // Stats for a single list
-        const target = resolveTargetToList(targets[0]);
-        const contacts = readContactsFromFile(target.filePath);
-
-        console.log(pc.cyan("\n" + "=".repeat(65)));
-        console.log(
-          pc.bold(pc.cyan(`📊 STATS: ${target.label.toUpperCase()}`)),
-        );
-        console.log("=".repeat(65));
-        console.log(
-          `${pc.bold("Target:")}               ${pc.green(target.label)}`,
-        );
-        console.log(
-          `${pc.bold("Total Unique Contacts:")} ${pc.magenta(contacts.size.toLocaleString())}`,
-        );
-        console.log("=".repeat(65) + "\n");
-        return;
-      }
-
-      // Comparison across multiple targets
-      const filePaths = targets.map((t) => resolveTargetToList(t).filePath);
-      const labels = targets.map((t) => resolveTargetToList(t).label);
-
-      if (filePaths.length === 2 && filePaths[0] && filePaths[1]) {
-        const stats = getInventoryStats(filePaths[0], filePaths[1]);
-        const [labelA, labelB] = labels;
-
-        console.log(pc.cyan("\n" + "=".repeat(65)));
-        console.log(pc.bold(pc.cyan("📊 TWO-WAY LIST COMPARISON")));
-        console.log("=".repeat(65));
-        console.log(
-          `  ${pc.bold(labelA?.padEnd(28) ?? "Target A")}: ${pc.yellow(stats.countA.toLocaleString().padStart(8))} contacts`,
-        );
-        console.log(
-          `  ${pc.bold(labelB?.padEnd(28) ?? "Target B")}: ${pc.yellow(stats.countB.toLocaleString().padStart(8))} contacts`,
-        );
-        console.log("-".repeat(65));
-        console.log(
-          `  ${pc.bold(pc.green("Common to Both (Intersection):"))}  ${pc.bold(pc.green(stats.commonCount.toLocaleString().padStart(8)))} contacts`,
-        );
-        console.log(
-          `  ${pc.bold(pc.magenta("Total Unique Combined (Union):"))}  ${pc.bold(pc.magenta(stats.unionCount.toLocaleString().padStart(8)))} contacts`,
-        );
-        console.log("=".repeat(65) + "\n");
-        return;
-      }
-
-      // Multi-way comparison (3+ lists)
-      const common = getCommonContacts(filePaths);
-      const allUnique = new Set<string>();
-      filePaths.forEach((f) => {
-        const contacts = readContactsFromFile(f);
-        contacts.forEach((c) => allUnique.add(c));
-      });
-
-      console.log(pc.cyan("\n" + "=".repeat(65)));
-      console.log(
-        pc.bold(
-          pc.cyan(`📊 MULTI-LIST COMPARISON (${filePaths.length} lists)`),
-        ),
-      );
-      console.log("=".repeat(65));
-      filePaths.forEach((f, idx) => {
-        const contacts = readContactsFromFile(f);
-        console.log(
-          `  ${pc.bold((labels[idx] ?? "").padEnd(28))}: ${pc.yellow(contacts.size.toLocaleString().padStart(8))} contacts`,
-        );
-      });
-      console.log("-".repeat(65));
-      console.log(
-        `  ${pc.bold(pc.green("Common to ALL Selected Lists:"))}    ${pc.bold(pc.green(common.length.toLocaleString().padStart(8)))} contacts`,
-      );
-      console.log(
-        `  ${pc.bold(pc.magenta("Total Unique Combined (Union):"))}  ${pc.bold(pc.magenta(allUnique.size.toLocaleString().padStart(8)))} contacts`,
-      );
-      console.log("=".repeat(65) + "\n");
-    } catch (error) {
+    if (opts.main && opts.lock) {
       console.error(
         pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          "\n❌ Error: Cannot specify both --main and --lock simultaneously.\n",
         ),
       );
       process.exit(1);
     }
-  });
 
-/**
- * Patch Command
- */
-program
-  .command("patch [args...]")
-  .description(
-    "Patch/import contacts from external text/vCard (.vcf) file(s) into global lists (--main, --lock) or a room/list target",
-  )
-  .option("--main", "Patch into global main list")
-  .option("--lock", "Patch into global lock list")
-  .action(
-    (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
-      try {
-        let targetLabel = "";
-        let targetListPath = "";
-        let fileArgs: string[] = [];
-
-        if (opts.main && opts.lock) {
-          console.error(
-            pc.red(
-              "\n❌ Error: Cannot specify both --main and --lock simultaneously.\n",
-            ),
-          );
-          process.exit(1);
-        }
-
-        if (opts.main) {
-          targetLabel = "Global Main List";
-          targetListPath = "main";
-          fileArgs = args;
-        } else if (opts.lock) {
-          targetLabel = "Global Lock List";
-          targetListPath = "lock";
-          fileArgs = args;
-        } else {
-          if (args.length < 2) {
-            console.error(
-              pc.red(
-                "\n❌ Error: Please specify a target list/room and at least one source file.\n" +
-                  "   Usage: wape patch --main <file1.txt> [file2.txt...]\n" +
-                  "          wape patch --lock <file1.txt> [file2.txt...]\n" +
-                  "          wape patch <target> <file1.txt> [file2.txt...]\n",
-              ),
-            );
-            process.exit(1);
-          }
-          const [targetArg, ...restFiles] = args;
-          if (!targetArg) {
-            console.error(
-              pc.red("\n❌ Error: Please specify a target list or room.\n"),
-            );
-            process.exit(1);
-          }
-          const resolved = resolveTargetToList(targetArg);
-          targetLabel = resolved.label;
-          targetListPath = resolved.filePath;
-          fileArgs = restFiles;
-        }
-
-        if (fileArgs.length === 0) {
-          console.error(
-            pc.red(
-              "\n❌ Error: At least one source text file must be specified.\n" +
-                "   Usage: wape patch --main <file1.txt> [file2.txt...]\n" +
-                "          wape patch --lock <file1.txt> [file2.txt...]\n" +
-                "          wape patch <target> <file1.txt> [file2.txt...]\n",
-            ),
-          );
-          process.exit(1);
-        }
-
-        const allNewContacts = new Set<string>();
-
-        for (const f of fileArgs) {
-          const resolvedPath = resolve(f);
-          if (!existsSync(resolvedPath)) {
-            console.error(
-              pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
-            );
-            process.exit(1);
-          }
-          const contacts = readContactsFromFile(resolvedPath);
-          for (const c of contacts) allNewContacts.add(c);
-        }
-
-        if (allNewContacts.size === 0) {
-          console.log(
-            pc.yellow(
-              "\nNo valid Nigerian phone numbers found in the provided file(s).\n",
-            ),
-          );
-          return;
-        }
-
-        const mergeResult = mergeContactsIntoFile(
-          targetListPath,
-          allNewContacts,
-        );
-
-        console.log(pc.green("\n" + "=".repeat(58)));
-        console.log(pc.bold(pc.green(`        PATCH REPORT: ${targetLabel}`)));
-        console.log("=".repeat(58));
-        console.log(
-          `${pc.bold("Target List:")}             ${pc.cyan(targetListPath)}`,
-        );
-        console.log(
-          `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
-        );
-        console.log(
-          `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(mergeResult.uniqueExtractsCount.toLocaleString())}`,
-        );
-        console.log(
-          `${pc.bold("New Contacts Added:")}      ${pc.green("+" + mergeResult.addedCount.toLocaleString())}`,
-        );
-        console.log(
-          `${pc.bold("Total Contacts in List:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
-        );
-        console.log("=".repeat(58) + "\n");
-      } catch (error) {
+    if (opts.main) {
+      targetLabel = "Global Main List";
+      targetListPath = "main";
+      fileArgs = args;
+    } else if (opts.lock) {
+      targetLabel = "Global Lock List";
+      targetListPath = "lock";
+      fileArgs = args;
+    } else {
+      if (args.length < 2) {
         console.error(
           pc.red(
-            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+            "\n❌ Error: Please specify a target list/room and at least one source file.\n" +
+              "   Usage: wape lists import <target> <file1.txt> [file2.txt...]\n" +
+              "          wape patch <target> <file1.txt> [file2.txt...]\n",
           ),
         );
         process.exit(1);
       }
-    },
-  );
+      const [targetArg, ...restFiles] = args;
+      if (!targetArg) {
+        console.error(
+          pc.red("\n❌ Error: Please specify a target list or room.\n"),
+        );
+        process.exit(1);
+      }
+      const resolved = resolveTargetToList(targetArg);
+      targetLabel = resolved.label;
+      targetListPath = resolved.filePath;
+      fileArgs = restFiles;
+    }
+
+    if (fileArgs.length === 0) {
+      console.error(
+        pc.red(
+          "\n❌ Error: At least one source text or vCard file must be specified.\n",
+        ),
+      );
+      process.exit(1);
+    }
+
+    const allNewContacts = new Set<string>();
+
+    for (const f of fileArgs) {
+      const resolvedPath = resolve(f);
+      if (!existsSync(resolvedPath)) {
+        console.error(
+          pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
+        );
+        process.exit(1);
+      }
+      const contacts = readContactsFromFile(resolvedPath);
+      for (const c of contacts) allNewContacts.add(c);
+    }
+
+    if (allNewContacts.size === 0) {
+      console.log(
+        pc.yellow(
+          "\nNo valid Nigerian phone numbers found in the provided file(s).\n",
+        ),
+      );
+      return;
+    }
+
+    const mergeResult = mergeContactsIntoFile(targetListPath, allNewContacts);
+
+    console.log(pc.green("\n" + "=".repeat(58)));
+    console.log(pc.bold(pc.green(`        PATCH REPORT: ${targetLabel}`)));
+    console.log("=".repeat(58));
+    console.log(
+      `${pc.bold("Target List:")}             ${pc.cyan(targetListPath)}`,
+    );
+    console.log(
+      `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
+    );
+    console.log(
+      `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(mergeResult.uniqueExtractsCount.toLocaleString())}`,
+    );
+    console.log(
+      `${pc.bold("New Contacts Added:")}      ${pc.green("+" + mergeResult.addedCount.toLocaleString())}`,
+    );
+    console.log(
+      `${pc.bold("Total Contacts in List:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
+    );
+    console.log("=".repeat(58) + "\n");
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
 
 /**
- * Unpatch Command
+ * Unpatch / Remove Handler
  */
-program
-  .command("unpatch [args...]")
-  .description(
-    "Unpatch/remove contacts present in external text/vCard (.vcf) file(s) from global lists (--main, --lock) or a room/list target",
-  )
-  .option("--main", "Unpatch from global main list")
-  .option("--lock", "Unpatch from global lock list")
-  .action(
-    (args: string[] = [], opts: { main?: boolean; lock?: boolean } = {}) => {
-      try {
-        let targetLabel = "";
-        let targetListPath = "";
-        let fileArgs: string[] = [];
+function handleUnpatch(
+  args: string[] = [],
+  opts: { main?: boolean; lock?: boolean } = {},
+) {
+  try {
+    let targetLabel = "";
+    let targetListPath = "";
+    let fileArgs: string[] = [];
 
-        if (opts.main && opts.lock) {
-          console.error(
-            pc.red(
-              "\n❌ Error: Cannot specify both --main and --lock simultaneously.\n",
-            ),
-          );
-          process.exit(1);
-        }
+    if (opts.main && opts.lock) {
+      console.error(
+        pc.red(
+          "\n❌ Error: Cannot specify both --main and --lock simultaneously.\n",
+        ),
+      );
+      process.exit(1);
+    }
 
-        if (opts.main) {
-          targetLabel = "Global Main List";
-          targetListPath = "main";
-          fileArgs = args;
-        } else if (opts.lock) {
-          targetLabel = "Global Lock List";
-          targetListPath = "lock";
-          fileArgs = args;
-        } else {
-          if (args.length < 2) {
-            console.error(
-              pc.red(
-                "\n❌ Error: Please specify a target list/room and at least one source file to unpatch.\n" +
-                  "   Usage: wape unpatch --main <file1.vcf> [file2.vcf...]\n" +
-                  "          wape unpatch --lock <file1.vcf> [file2.vcf...]\n" +
-                  "          wape unpatch <target> <file1.vcf> [file2.vcf...]\n",
-              ),
-            );
-            process.exit(1);
-          }
-          const [targetArg, ...restFiles] = args;
-          if (!targetArg) {
-            console.error(
-              pc.red("\n❌ Error: Please specify a target list or room.\n"),
-            );
-            process.exit(1);
-          }
-          const resolved = resolveTargetToList(targetArg);
-          targetLabel = resolved.label;
-          targetListPath = resolved.filePath;
-          fileArgs = restFiles;
-        }
-
-        if (fileArgs.length === 0) {
-          console.error(
-            pc.red(
-              "\n❌ Error: At least one source file must be specified.\n" +
-                "   Usage: wape unpatch --main <file1.vcf> [file2.vcf...]\n" +
-                "          wape unpatch --lock <file1.vcf> [file2.vcf...]\n" +
-                "          wape unpatch <target> <file1.vcf> [file2.vcf...]\n",
-            ),
-          );
-          process.exit(1);
-        }
-
-        const allRemoveContacts = new Set<string>();
-
-        for (const f of fileArgs) {
-          const resolvedPath = resolve(f);
-          if (!existsSync(resolvedPath)) {
-            console.error(
-              pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
-            );
-            process.exit(1);
-          }
-          const contacts = readContactsFromFile(resolvedPath);
-          for (const c of contacts) allRemoveContacts.add(c);
-        }
-
-        if (allRemoveContacts.size === 0) {
-          console.log(
-            pc.yellow(
-              "\nNo valid Nigerian phone numbers found in the provided file(s) to unpatch.\n",
-            ),
-          );
-          return;
-        }
-
-        const unmergeResult = unmergeContactsFromFile(
-          targetListPath,
-          allRemoveContacts,
-        );
-
-        console.log(pc.yellow("\n" + "=".repeat(58)));
-        console.log(
-          pc.bold(pc.yellow(`       UNPATCH REPORT: ${targetLabel}`)),
-        );
-        console.log("=".repeat(58));
-        console.log(
-          `${pc.bold("Target List:")}             ${pc.cyan(targetListPath)}`,
-        );
-        console.log(
-          `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
-        );
-        console.log(
-          `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(unmergeResult.uniqueExtractsCount.toLocaleString())}`,
-        );
-        console.log(
-          `${pc.bold("Contacts Removed:")}        ${pc.red("-" + unmergeResult.removedCount.toLocaleString())}`,
-        );
-        console.log(
-          `${pc.bold("Total Contacts in List:")}  ${pc.magenta(unmergeResult.totalCount.toLocaleString())}`,
-        );
-        console.log("=".repeat(58) + "\n");
-      } catch (error) {
+    if (opts.main) {
+      targetLabel = "Global Main List";
+      targetListPath = "main";
+      fileArgs = args;
+    } else if (opts.lock) {
+      targetLabel = "Global Lock List";
+      targetListPath = "lock";
+      fileArgs = args;
+    } else {
+      if (args.length < 2) {
         console.error(
           pc.red(
-            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+            "\n❌ Error: Please specify a target list/room and at least one source file to unpatch.\n" +
+              "   Usage: wape lists remove <target> <file1.vcf> [file2.vcf...]\n" +
+              "          wape unpatch <target> <file1.vcf> [file2.vcf...]\n",
           ),
         );
         process.exit(1);
       }
-    },
-  );
+      const [targetArg, ...restFiles] = args;
+      if (!targetArg) {
+        console.error(
+          pc.red("\n❌ Error: Please specify a target list or room.\n"),
+        );
+        process.exit(1);
+      }
+      const resolved = resolveTargetToList(targetArg);
+      targetLabel = resolved.label;
+      targetListPath = resolved.filePath;
+      fileArgs = restFiles;
+    }
+
+    if (fileArgs.length === 0) {
+      console.error(
+        pc.red(
+          "\n❌ Error: At least one source file must be specified to unpatch.\n",
+        ),
+      );
+      process.exit(1);
+    }
+
+    const allRemoveContacts = new Set<string>();
+
+    for (const f of fileArgs) {
+      const resolvedPath = resolve(f);
+      if (!existsSync(resolvedPath)) {
+        console.error(
+          pc.red(`\n❌ Error: File '${f}' not found at ${resolvedPath}\n`),
+        );
+        process.exit(1);
+      }
+      const contacts = readContactsFromFile(resolvedPath);
+      for (const c of contacts) allRemoveContacts.add(c);
+    }
+
+    if (allRemoveContacts.size === 0) {
+      console.log(
+        pc.yellow(
+          "\nNo valid Nigerian phone numbers found in the provided file(s) to unpatch.\n",
+        ),
+      );
+      return;
+    }
+
+    const unmergeResult = unmergeContactsFromFile(
+      targetListPath,
+      allRemoveContacts,
+    );
+
+    console.log(pc.yellow("\n" + "=".repeat(58)));
+    console.log(pc.bold(pc.yellow(`       UNPATCH REPORT: ${targetLabel}`)));
+    console.log("=".repeat(58));
+    console.log(
+      `${pc.bold("Target List:")}             ${pc.cyan(targetListPath)}`,
+    );
+    console.log(
+      `${pc.bold("Source File(s):")}          ${fileArgs.join(", ")}`,
+    );
+    console.log(
+      `${pc.bold("Valid Extracts Found:")}    ${pc.yellow(unmergeResult.uniqueExtractsCount.toLocaleString())}`,
+    );
+    console.log(
+      `${pc.bold("Contacts Removed:")}        ${pc.red("-" + unmergeResult.removedCount.toLocaleString())}`,
+    );
+    console.log(
+      `${pc.bold("Total Contacts in List:")}  ${pc.magenta(unmergeResult.totalCount.toLocaleString())}`,
+    );
+    console.log("=".repeat(58) + "\n");
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
 
 /**
- * Print Command
+ * Print Contacts Handler & Command
  */
+function handlePrint(target: string) {
+  try {
+    const resolved = resolveTargetToList(target);
+    const contacts = readContactsFromFile(resolved.filePath);
+
+    if (contacts.size === 0) {
+      console.log(pc.yellow(`\nNo contacts found in ${resolved.label}.\n`));
+      return;
+    }
+
+    for (const contact of contacts) {
+      console.log(formatPhoneNumber(contact));
+    }
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
 program
   .command("print <target>")
   .description(
     "Print all phone numbers in a room or list in XXXX XXX XXXX format",
   )
-  .action((target: string) => {
-    try {
-      const resolved = resolveTargetToList(target);
-      const contacts = readContactsFromFile(resolved.filePath);
-
-      if (contacts.size === 0) {
-        console.log(pc.yellow(`\nNo contacts found in ${resolved.label}.\n`));
-        return;
-      }
-
-      for (const contact of contacts) {
-        console.log(formatPhoneNumber(contact));
-      }
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
+  .action(handlePrint);
 
 /**
- * Links Command
+ * WhatsApp Group Invite Links Handlers & Command
  */
-program
+async function handleExtractLinks(options?: { backup?: string; key?: string }) {
+  try {
+    const { db } = await loadDbAndGroups(options?.backup, options?.key);
+    const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+
+    if (allExtractedLinks.length === 0) {
+      console.log(
+        pc.yellow("\nNo WhatsApp group invite links found in backup.\n"),
+      );
+      return;
+    }
+
+    const recordedLinks = new Set(getSavedLinks());
+    const newLinks = allExtractedLinks.filter(
+      (link) => !recordedLinks.has(link),
+    );
+
+    if (newLinks.length === 0) {
+      console.log(
+        pc.green(
+          `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
+        ),
+      );
+      return;
+    }
+
+    saveLinks(newLinks);
+
+    const clipboardText = newLinks.join("\n");
+    const copied = await copyToClipboard(clipboardText);
+
+    for (const link of newLinks) {
+      console.log(link);
+    }
+
+    if (copied) {
+      console.log(
+        pc.dim(
+          `\n📋 Copied ${newLinks.length.toLocaleString()} newly found link(s) to clipboard.\n`,
+        ),
+      );
+    }
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+async function handleSavedLinks(
+  opts: ExportFilterOptions & { count?: boolean },
+) {
+  try {
+    const links = getSavedLinks(opts);
+
+    if (opts.count) {
+      console.log(links.length);
+      return;
+    }
+
+    if (links.length === 0) {
+      if (process.stdout.isTTY) {
+        console.log(
+          pc.yellow(
+            "\nNo WhatsApp group invite links found matching the specified criteria.\n",
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!process.stdout.isTTY) {
+      for (const link of links) {
+        process.stdout.write(link + "\n");
+      }
+      return;
+    }
+
+    for (const link of links) {
+      console.log(link);
+    }
+
+    const copied = await copyToClipboard(links.join("\n"));
+    if (copied) {
+      console.log(
+        pc.dim(
+          `\n📋 Copied ${links.length.toLocaleString()} link(s) to clipboard.\n`,
+        ),
+      );
+    }
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+const linksCmd = program
   .command("links")
+  .alias("link")
   .description(
-    `Extract all newly found WhatsApp group invite links from all chats, record them to ${getSavedLinksFile()}, print, and copy them`,
-  )
-  .action(async () => {
-    try {
-      const { db } = await loadDbAndGroups();
-      const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+    "Extract new WhatsApp group invite links from backups or search saved link history",
+  );
 
-      if (allExtractedLinks.length === 0) {
-        console.log(
-          pc.yellow("\nNo WhatsApp group invite links found in backup.\n"),
-        );
-        return;
-      }
-
-      const recordedLinks = new Set(getSavedLinks());
-      const newLinks = allExtractedLinks.filter(
-        (link) => !recordedLinks.has(link),
-      );
-
-      if (newLinks.length === 0) {
-        console.log(
-          pc.green(
-            `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
-          ),
-        );
-        return;
-      }
-
-      saveLinks(newLinks);
-
-      const clipboardText = newLinks.join("\n");
-      const copied = await copyToClipboard(clipboardText);
-
-      // Print newly found links strictly one per line to terminal
-      for (const link of newLinks) {
-        console.log(link);
-      }
-
-      if (copied) {
-        console.log(
-          pc.dim(
-            `\n📋 Copied ${newLinks.length.toLocaleString()} newly found link(s) to clipboard.\n`,
-          ),
-        );
-      }
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
-
-/**
- * Ignore Command
- */
-program
-  .command("ignore [action]")
+linksCmd
+  .command("extract", { isDefault: true })
   .description(
-    "Mark WhatsApp groups as ignored so they are excluded from rooms and scans, or list them with 'wape ignore list'",
+    `Extract all newly found WhatsApp group invite links from backup, record to ${getSavedLinksFile()}, print, and copy them`,
   )
   .option(
     "-b, --backup <path>",
     "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
   )
   .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .action(
-    async (
-      action?: string,
-      options?: {
-        backup?: string;
-        key?: string;
-      },
-    ) => {
+  .action(handleExtractLinks);
+
+linksCmd
+  .command("history")
+  .alias("search")
+  .alias("list")
+  .description(
+    "Filter through and print WhatsApp group invite links from storage",
+  )
+  .option(
+    "--since <duration>",
+    "Filter links saved since duration (e.g. 30m, 3d, 1w, 2h)",
+  )
+  .option(
+    "--from <dates...>",
+    "Filter links saved starting from date (YYYY-MM-DD), e.g. --from 2020-10-01 to 2020-10-30",
+  )
+  .option("--to <date>", "Filter links saved up to date (YYYY-MM-DD)")
+  .option("--last-month", "Filter links saved during last month")
+  .option(
+    "--last <number>",
+    "Limit to the last N most recently saved links (e.g. --last 20, --last 40)",
+  )
+  .option(
+    "-c, --count",
+    "Print the total count of matching links rather than printing the links",
+  )
+  .action(handleSavedLinks);
+
+/**
+ * Ignore Handlers
+ */
+async function handleIgnore(
+  action?: string,
+  options?: {
+    backup?: string;
+    key?: string;
+  },
+) {
+  try {
+    if (action?.toLowerCase() === "list") {
+      let groups: GroupSummary[] | undefined;
       try {
-        if (action?.toLowerCase() === "list") {
-          let groups: GroupSummary[] | undefined;
-          try {
-            const res = await loadDbAndGroups(options?.backup, options?.key);
-            groups = res.groups;
-          } catch {
-            // Backup not provided or not decryptable - fallback to stored metadata
-          }
-          printIgnoredGroups(groups);
-          return;
-        }
+        const res = await loadDbAndGroups(options?.backup, options?.key);
+        groups = res.groups;
+      } catch {
+        // Fallback
+      }
+      printIgnoredGroups(groups);
+      return;
+    }
 
-        console.log(pc.cyan("\n📱 wape - WhatsApp Group Ignore Manager\n"));
-        console.log(pc.dim("Decrypting / preparing SQLite database..."));
-        const { groups } = await loadDbAndGroups(options?.backup, options?.key);
+    console.log(pc.cyan("\n📱 wape - WhatsApp Group Ignore Manager\n"));
+    console.log(pc.dim("Decrypting / preparing SQLite database..."));
+    const { groups } = await loadDbAndGroups(options?.backup, options?.key);
 
-        if (groups.length === 0) {
-          console.log(pc.yellow("No group chats found in the backup."));
-          return;
-        }
+    if (groups.length === 0) {
+      console.log(pc.yellow("No group chats found in the backup."));
+      return;
+    }
 
-        await ignoreGroupsInteractive(groups);
-      } catch (error) {
+    await ignoreGroupsInteractive(groups);
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+async function handleIgnored(options?: { backup?: string; key?: string }) {
+  try {
+    let groups: GroupSummary[] | undefined;
+    try {
+      const res = await loadDbAndGroups(options?.backup, options?.key);
+      groups = res.groups;
+    } catch {
+      // Fallback
+    }
+    printIgnoredGroups(groups);
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+async function handleUnignore(options?: { backup?: string; key?: string }) {
+  try {
+    let groups: GroupSummary[] | undefined;
+    try {
+      const res = await loadDbAndGroups(options?.backup, options?.key);
+      groups = res.groups;
+    } catch {
+      // Fallback
+    }
+    await unignoreGroupsInteractive(groups);
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+/**
+ * Groups Handler & Command
+ */
+async function handleGroups(
+  query?: string,
+  options?: {
+    backup?: string;
+    key?: string;
+    rank?: boolean;
+    room?: string;
+    limit?: string;
+    history?: boolean;
+  },
+) {
+  if (options?.history) {
+    handleOneoffGroupSearch(query, {
+      limit: options?.limit,
+      rank: options?.rank,
+    });
+    return;
+  }
+
+  try {
+    const { groups } = await loadDbAndGroups(options?.backup, options?.key);
+
+    if (groups.length === 0) {
+      console.log(pc.yellow("\nNo group chats found in the backup.\n"));
+      return;
+    }
+
+    let displayGroups = groups;
+    let roomId: string | undefined;
+
+    if (options?.room) {
+      const cleanRoomId = options.room.trim().toLowerCase();
+      const room = getRoomById(cleanRoomId);
+      if (!room) {
         console.error(
           pc.red(
-            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+            `\n❌ Error: Room '${options.room}' not found. Use 'wape rooms list' to see all rooms.\n`,
           ),
         );
         process.exit(1);
       }
-    },
+      roomId = room.id;
+      const resolved = resolveRoomGroups(room, groups);
+      const activeRowIds = new Set(resolved.activeJidRowIds);
+      const activeJids = new Set(
+        resolved.activeJidStrings.map((j) => j.toLowerCase()),
+      );
+      displayGroups = groups.filter(
+        (g) =>
+          activeRowIds.has(g.jidRowId) ||
+          activeJids.has(g.jidString.toLowerCase()),
+      );
+    }
+
+    if (query && query.trim()) {
+      const qLower = query.trim().toLowerCase();
+      displayGroups = displayGroups.filter(
+        (g) =>
+          g.subject.toLowerCase().includes(qLower) ||
+          (g.communityName && g.communityName.toLowerCase().includes(qLower)),
+      );
+      if (displayGroups.length === 0) {
+        console.log(
+          pc.yellow(
+            `\nNo active groups found matching '${query}' in backup. Searching one-off historical groups...\n`,
+          ),
+        );
+        handleOneoffGroupSearch(query, {
+          limit: options?.limit,
+          rank: options?.rank,
+        });
+        return;
+      }
+    }
+
+    const limitNum = options?.limit ? parseInt(options.limit, 10) : undefined;
+    if (limitNum && limitNum > 0 && displayGroups.length > limitNum) {
+      displayGroups = displayGroups.slice(0, limitNum);
+    }
+
+    printGroups(displayGroups, { rank: options?.rank, roomId });
+  } catch (error) {
+    console.error(
+      pc.red(
+        `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+    );
+    process.exit(1);
+  }
+}
+
+/**
+ * Audit Handler
+ */
+async function handleAudit(
+  id?: string,
+  options?: {
+    threshold?: string;
+    exit?: boolean;
+    exitable?: boolean;
+    all?: boolean;
+    interactiveIgnore?: boolean;
+    backup?: string;
+    key?: string;
+  },
+) {
+  if (options?.exit || options?.exitable) {
+    try {
+      let room: Room | null = null;
+      if (id) {
+        room = getRoomById(id);
+        if (!room) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+            ),
+          );
+          process.exit(1);
+        }
+      }
+
+      const { db, groups } = await loadDbAndGroups(
+        options?.backup,
+        options?.key,
+      );
+
+      let targetGroups = groups;
+      if (room) {
+        const resolved = resolveRoomGroups(room, groups);
+        const activeJids = new Set(
+          resolved.resolvedItems
+            .filter((item) => !item.isMissing && item.resolvedJidRowId !== null)
+            .map((item) => item.resolvedJidRowId!),
+        );
+        targetGroups = groups.filter((g) => activeJids.has(g.jidRowId));
+      }
+
+      const flagged = await auditExitableGroups(db, targetGroups);
+      printExitableAudit(flagged, targetGroups.length, {
+        roomContext: room,
+      });
+
+      if (options?.interactiveIgnore && flagged.length > 0) {
+        const groupsByJidRowId = new Map(groups.map((g) => [g.jidRowId, g]));
+        const itemsToIgnore = flagged.map((item) => {
+          const live = groupsByJidRowId.get(item.groupJidRowId);
+          return {
+            jidString: live?.jidString ?? String(item.groupJidRowId),
+            subject: item.subject,
+            communityName: item.communityName,
+            participantCount: item.totalMembers,
+            isCommunityRoot: item.isCommunityRoot ?? live?.isCommunityRoot,
+            isAnnouncement: item.isAnnouncement ?? live?.isAnnouncement,
+            isSubgroup: live?.isSubgroup,
+            isStandalone: live?.isStandalone,
+          };
+        });
+
+        await ignoreAuditItemsInteractive(itemsToIgnore);
+      }
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  await executeRoomAudit(id, options);
+}
+
+const groupsCmd = program
+  .command("groups")
+  .alias("group")
+  .description("List, rank, audit, or ignore WhatsApp group chats");
+
+groupsCmd
+  .command("list [query]", { isDefault: true })
+  .description(
+    "List active WhatsApp groups with optional member count ranking or provenance search",
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .option("--rank", "Sort and rank groups from highest to lowest member count")
+  .option("--room <id>", "Filter groups to only those in the specified room")
+  .option("-l, --limit <number>", "Limit number of search results returned")
+  .option("--history", "Search historical groups scanned from one-off backups")
+  .action(handleGroups);
+
+groupsCmd
+  .command("audit [id]")
+  .description(
+    "Audit WhatsApp groups: check room demographics (-t, --threshold) or find groups to leave/delete (-e, --exit)",
+  )
+  .option(
+    "-t, --threshold <percent>",
+    "Audit room for groups exceeding non-Nigerian percentage threshold (default: 50)",
+  )
+  .option(
+    "-e, --exit",
+    "Scan all groups to find inactive, dead, temporary, or spam groups recommended for leaving/deleting",
+    false,
+  )
+  .option("--exitable", "Alias for --exit", false)
+  .option(
+    "-a, --all",
+    "Show all groups in the room, including non-flagged ones",
+    false,
+  )
+  .option(
+    "-i, --interactive-ignore",
+    "Interactively select flagged groups from the audit output to ignore from future audits",
+    false,
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleAudit);
+
+groupsCmd
+  .command("ignore")
+  .description("Interactively mark WhatsApp groups as ignored")
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleIgnore);
+
+groupsCmd
+  .command("unignore")
+  .description("Interactively restore previously ignored groups")
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleUnignore);
+
+groupsCmd
+  .command("ignored")
+  .description("List all WhatsApp groups currently marked as ignored")
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleIgnored);
+
+/**
+ * Lists Handler & Command
+ */
+function handleListsOverview() {
+  const knownLists = getAllKnownLists();
+  console.log(pc.cyan(`\n📁 wape Contact Lists\n`));
+  console.log("=".repeat(50));
+  knownLists.forEach((l) => {
+    console.log(
+      `  ${pc.bold(l.name.padEnd(25))} ${pc.yellow(l.count.toLocaleString().padStart(8))} contacts`,
+    );
+  });
+  console.log("=".repeat(50) + "\n");
+}
+
+async function handleReset(
+  targets?: string[],
+  options?: { room?: boolean; list?: boolean },
+) {
+  const inputs = targets ? [...targets] : [];
+
+  if (inputs.length === 0) {
+    if (!process.stdout.isTTY) {
+      console.error(
+        pc.red(
+          "\n❌ Error: Please specify at least one list or room name to reset.\n",
+        ),
+      );
+      process.exit(1);
+    }
+
+    const allLists = getAllKnownLists();
+    const allRooms = getRooms();
+
+    type TargetChoice = {
+      type: "list" | "room";
+      name: string;
+      label: string;
+    };
+    const choices: { name: string; value: TargetChoice }[] = [];
+
+    allLists.forEach((l) => {
+      choices.push({
+        name: `📋 List: ${l.name} (${l.count.toLocaleString()} contacts)`,
+        value: {
+          type: "list",
+          name: l.isGlobal ? l.name.replace(/ \(Global\)$/, "") : l.name,
+          label: l.name,
+        },
+      });
+    });
+
+    allRooms.forEach((r) => {
+      const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
+      choices.push({
+        name: `🏠 Room: ${r.id} (${count} groups, list: ${r.targetList ?? r.id})`,
+        value: { type: "room", name: r.id, label: r.id },
+      });
+    });
+
+    if (choices.length === 0) {
+      console.log(pc.yellow("\nNo lists or rooms found to reset.\n"));
+      return;
+    }
+
+    const selected = await select<TargetChoice>({
+      message: "Select what to reset:",
+      choices,
+    });
+
+    const isRoom = selected.type === "room";
+    const name = selected.name;
+
+    const confirmAnswer = await input({
+      message: `Are you sure you want to completely empty ${isRoom ? `room '${name}' (groups + contacts)` : `list '${name}'`}? (yes/no):`,
+      validate: (val) => {
+        const v = val.trim().toLowerCase();
+        if (v === "yes" || v === "y" || v === "no" || v === "n") return true;
+        return "Please enter 'yes' (or 'y') to proceed, or 'no' (or 'n') to cancel.";
+      },
+    });
+
+    if (!["yes", "y"].includes(confirmAnswer.trim().toLowerCase())) {
+      console.log(pc.yellow("Reset cancelled."));
+      return;
+    }
+
+    if (isRoom) {
+      const room = getRoomById(name);
+      const listName = room?.targetList
+        ? normalizeListName(room.targetList)
+        : name;
+      const groupRes = clearRoomGroups(name);
+      const listRes = clearListContacts(listName);
+      console.log(
+        pc.green(
+          `\n🧹 Reset room '${name}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.\n`,
+        ),
+      );
+    } else {
+      const listRes = clearListContacts(name);
+      console.log(
+        pc.green(
+          `\n🧹 Reset list '${name}': cleared ${listRes.clearedCount.toLocaleString()} contacts.\n`,
+        ),
+      );
+    }
+    return;
+  }
+
+  for (const raw of inputs) {
+    const clean = raw.trim().toLowerCase();
+    const isExplicitRoom = options?.room;
+    const isExplicitList = options?.list;
+
+    if (isExplicitRoom) {
+      const room = getRoomById(clean);
+      if (!room) {
+        console.error(
+          pc.red(
+            `\n❌ Error: Room '${clean}' not found. Use 'wape rooms list' to see all rooms.\n`,
+          ),
+        );
+        continue;
+      }
+      const listName = room.targetList
+        ? normalizeListName(room.targetList)
+        : room.id;
+      const groupRes = clearRoomGroups(room.id);
+      const listRes = clearListContacts(listName);
+      console.log(
+        pc.green(
+          `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
+        ),
+      );
+      continue;
+    }
+
+    if (isExplicitList) {
+      const listRes = clearListContacts(clean);
+      if (listRes.success) {
+        console.log(
+          pc.green(
+            `\n🧹 Reset list '${clean}': cleared ${listRes.clearedCount.toLocaleString()} contacts.`,
+          ),
+        );
+      } else {
+        console.error(
+          pc.red(
+            `\n❌ Error: List '${clean}' not found. Use 'wape lists' to see existing lists.\n`,
+          ),
+        );
+      }
+      continue;
+    }
+
+    const room = getRoomById(clean);
+    if (room) {
+      const listName = room.targetList
+        ? normalizeListName(room.targetList)
+        : room.id;
+      const groupRes = clearRoomGroups(room.id);
+      const listRes = clearListContacts(listName);
+      console.log(
+        pc.green(
+          `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
+        ),
+      );
+      continue;
+    }
+
+    const listRes = clearListContacts(clean);
+    if (listRes.success) {
+      console.log(
+        pc.green(
+          `\n🧹 Reset list '${clean}': cleared ${listRes.clearedCount.toLocaleString()} contacts.`,
+        ),
+      );
+    } else {
+      console.error(
+        pc.red(
+          `\n❌ Error: No room or list found matching '${clean}'. Use 'wape rooms list' or 'wape lists'.\n`,
+        ),
+      );
+    }
+  }
+  console.log("");
+}
+
+const listsCmd = program
+  .command("lists")
+  .alias("list")
+  .description(
+    "Manage contact lists, inspect stats, print, import, or clear contacts",
   );
 
-/**
- * Ignored Groups Overview Command
- */
-program
-  .command("ignored")
-  .description("List all WhatsApp groups marked as ignored")
-  .option(
-    "-b, --backup <path>",
-    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
-  )
-  .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .action(async (options?: { backup?: string; key?: string }) => {
-    try {
-      let groups: GroupSummary[] | undefined;
-      try {
-        const res = await loadDbAndGroups(options?.backup, options?.key);
-        groups = res.groups;
-      } catch {
-        // Backup not provided or not decryptable - fallback to stored metadata
-      }
-      printIgnoredGroups(groups);
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
+listsCmd
+  .command("overview", { isDefault: true })
+  .description("List all contact lists and their current contact counts")
+  .action(handleListsOverview);
 
-/**
- * Unignore Command
- */
-program
-  .command("unignore")
+listsCmd
+  .command("print <target>")
   .description(
-    "Unmark previously ignored groups so they can be added to rooms again",
+    "Print all phone numbers in a specific room or list, strictly one per line",
   )
-  .option(
-    "-b, --backup <path>",
-    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  .action(handlePrint);
+
+listsCmd
+  .command("import <target> <files...>")
+  .alias("patch")
+  .description(
+    "Import contacts from external text or vCard (.vcf) files into a list or room",
   )
-  .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .action(async (options?: { backup?: string; key?: string }) => {
-    try {
-      let groups: GroupSummary[] | undefined;
-      try {
-        const res = await loadDbAndGroups(options?.backup, options?.key);
-        groups = res.groups;
-      } catch {
-        // Fallback to unignore using stored metadata
-      }
-      await unignoreGroupsInteractive(groups);
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
+  .action((target: string, files: string[]) => handlePatch([target, ...files]));
+
+listsCmd
+  .command("remove <target> <files...>")
+  .alias("unpatch")
+  .description(
+    "Remove contacts present in external text or vCard (.vcf) files from a list or room",
+  )
+  .action((target: string, files: string[]) =>
+    handleUnpatch([target, ...files]),
+  );
+
+listsCmd
+  .command("clear <target>")
+  .alias("reset")
+  .description("Empty contacts from a specific list")
+  .action((target: string) => handleReset([target], { list: true }));
+
+listsCmd
+  .command("stats [targets...]")
+  .description(
+    "Compute contact count, overlap, and union statistics across lists and rooms",
+  )
+  .action(handleStats);
 
 /**
  * Chats Command Group
@@ -3141,7 +3709,7 @@ program
 const chatsCmd = program
   .command("chats")
   .alias("chat")
-  .description("Export and manage WhatsApp chats");
+  .description("Export formatted WhatsApp chat transcripts or search messages");
 
 chatsCmd
   .command("export [target]")
@@ -3179,9 +3747,7 @@ chatsCmd
 
 chatsCmd
   .command("links")
-  .description(
-    "Filter through and print WhatsApp group invite links from the WAPE database",
-  )
+  .description("Alias for 'wape links history'")
   .option(
     "--since <duration>",
     "Filter links saved since duration (e.g. 30m, 3d, 1w, 2h)",
@@ -3200,56 +3766,7 @@ chatsCmd
     "-c, --count",
     "Print the total count of matching links rather than printing the links",
   )
-  .action(async (opts: ExportFilterOptions & { count?: boolean }) => {
-    try {
-      const links = getSavedLinks(opts);
-
-      if (opts.count) {
-        console.log(links.length);
-        return;
-      }
-
-      if (links.length === 0) {
-        if (process.stdout.isTTY) {
-          console.log(
-            pc.yellow(
-              "\nNo WhatsApp group invite links found matching the specified criteria.\n",
-            ),
-          );
-        }
-        return;
-      }
-
-      // If piped / redirected to file or another command, stream raw links to stdout without copying to clipboard
-      if (!process.stdout.isTTY) {
-        for (const link of links) {
-          process.stdout.write(link + "\n");
-        }
-        return;
-      }
-
-      // Default interactive terminal behavior: print links and copy to clipboard
-      for (const link of links) {
-        console.log(link);
-      }
-
-      const copied = await copyToClipboard(links.join("\n"));
-      if (copied) {
-        console.log(
-          pc.dim(
-            `\n📋 Copied ${links.length.toLocaleString()} link(s) to clipboard.\n`,
-          ),
-        );
-      }
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
+  .action(handleSavedLinks);
 
 chatsCmd
   .command("search <query>")
@@ -3286,389 +3803,6 @@ chatsCmd.action(() => {
 });
 
 /**
- * Groups Command
- */
-program
-  .command("groups")
-  .alias("group")
-  .description(
-    "List all active WhatsApp group chats and their member counts, with optional ranking by member count",
-  )
-  .option(
-    "-b, --backup <path>",
-    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
-  )
-  .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .option(
-    "--rank",
-    "Sort and rank groups from highest to lowest member count regardless of community",
-  )
-  .option("--room <id>", "Filter groups to only those in the specified room")
-  .action(
-    async (options?: {
-      backup?: string;
-      key?: string;
-      rank?: boolean;
-      room?: string;
-    }) => {
-      try {
-        const { groups } = await loadDbAndGroups(options?.backup, options?.key);
-
-        if (groups.length === 0) {
-          console.log(pc.yellow("\nNo group chats found in the backup.\n"));
-          return;
-        }
-
-        let displayGroups = groups;
-        let roomId: string | undefined;
-
-        if (options?.room) {
-          const cleanRoomId = options.room.trim().toLowerCase();
-          const room = getRoomById(cleanRoomId);
-          if (!room) {
-            console.error(
-              pc.red(
-                `\n❌ Error: Room '${options.room}' not found. Use 'wape rooms list' to see all rooms.\n`,
-              ),
-            );
-            process.exit(1);
-          }
-          roomId = room.id;
-          const resolved = resolveRoomGroups(room, groups);
-          const activeRowIds = new Set(resolved.activeJidRowIds);
-          const activeJids = new Set(
-            resolved.activeJidStrings.map((j) => j.toLowerCase()),
-          );
-          displayGroups = groups.filter(
-            (g) =>
-              activeRowIds.has(g.jidRowId) ||
-              activeJids.has(g.jidString.toLowerCase()),
-          );
-        }
-
-        printGroups(displayGroups, { rank: options?.rank, roomId });
-      } catch (error) {
-        console.error(
-          pc.red(
-            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-        process.exit(1);
-      }
-    },
-  );
-
-/**
- * Audit Command (Demographic room audits & exitable group recommendations)
- */
-program
-  .command("audit [id]")
-  .description(
-    "Audit WhatsApp groups: check room demographics (-t, --threshold) or find groups to leave/delete (-e, --exit)",
-  )
-  .option(
-    "-t, --threshold <percent>",
-    "Audit room for groups exceeding non-Nigerian percentage threshold (default: 50)",
-  )
-  .option(
-    "-e, --exit",
-    "Scan all groups to find inactive, dead, temporary, or spam groups recommended for leaving/deleting",
-    false,
-  )
-  .option("--exitable", "Alias for --exit", false)
-  .option(
-    "-a, --all",
-    "Show all groups in the room, including non-flagged ones (for room demographic audit)",
-    false,
-  )
-  .option(
-    "-i, --interactive-ignore",
-    "Interactively select flagged groups from the audit output to ignore from future audits",
-    false,
-  )
-  .option(
-    "-b, --backup <path>",
-    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
-  )
-  .option("-k, --key <key>", "Decryption key for encrypted backups")
-  .action(
-    async (
-      id?: string,
-      options?: {
-        threshold?: string;
-        exit?: boolean;
-        exitable?: boolean;
-        all?: boolean;
-        interactiveIgnore?: boolean;
-        backup?: string;
-        key?: string;
-      },
-    ) => {
-      if (options?.exit || options?.exitable) {
-        try {
-          let room: Room | null = null;
-          if (id) {
-            room = getRoomById(id);
-            if (!room) {
-              console.error(
-                pc.red(
-                  `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
-                ),
-              );
-              process.exit(1);
-            }
-          }
-
-          const { db, groups } = await loadDbAndGroups(
-            options?.backup,
-            options?.key,
-          );
-
-          let targetGroups = groups;
-          if (room) {
-            const resolved = resolveRoomGroups(room, groups);
-            const activeJids = new Set(
-              resolved.resolvedItems
-                .filter(
-                  (item) => !item.isMissing && item.resolvedJidRowId !== null,
-                )
-                .map((item) => item.resolvedJidRowId!),
-            );
-            targetGroups = groups.filter((g) => activeJids.has(g.jidRowId));
-          }
-
-          const flagged = await auditExitableGroups(db, targetGroups);
-          printExitableAudit(flagged, targetGroups.length, {
-            roomContext: room,
-          });
-
-          if (options?.interactiveIgnore && flagged.length > 0) {
-            const groupsByJidRowId = new Map(
-              groups.map((g) => [g.jidRowId, g]),
-            );
-            const itemsToIgnore = flagged.map((item) => {
-              const live = groupsByJidRowId.get(item.groupJidRowId);
-              return {
-                jidString: live?.jidString ?? String(item.groupJidRowId),
-                subject: item.subject,
-                communityName: item.communityName,
-                participantCount: item.totalMembers,
-                isCommunityRoot: item.isCommunityRoot ?? live?.isCommunityRoot,
-                isAnnouncement: item.isAnnouncement ?? live?.isAnnouncement,
-                isSubgroup: live?.isSubgroup,
-                isStandalone: live?.isStandalone,
-              };
-            });
-
-            await ignoreAuditItemsInteractive(itemsToIgnore);
-          }
-        } catch (error) {
-          console.error(
-            pc.red(
-              `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          );
-          process.exit(1);
-        }
-        return;
-      }
-
-      await executeRoomAudit(id, options);
-    },
-  );
-
-/**
- * Lists overview
- */
-program
-  .command("lists")
-  .description(
-    "List all configured contact lists and their current contact counts",
-  )
-  .action(() => {
-    const knownLists = getAllKnownLists();
-    console.log(pc.cyan(`\n📁 wape Contact Lists\n`));
-    console.log("=".repeat(50));
-    knownLists.forEach((l) => {
-      console.log(
-        `  ${pc.bold(l.name.padEnd(25))} ${pc.yellow(l.count.toLocaleString().padStart(8))} contacts`,
-      );
-    });
-    console.log("=".repeat(50) + "\n");
-  });
-
-/**
- * Reset Command (Lists or Rooms)
- */
-program
-  .command("reset [targets...]")
-  .description("Reset (empty) one or more contact lists or rooms")
-  .option("--room", "Target a room instead of a list")
-  .option("--list", "Target a list instead of a room")
-  .action(
-    async (
-      targets?: string[],
-      options?: { room?: boolean; list?: boolean },
-    ) => {
-      const inputs = targets ? [...targets] : [];
-
-      if (inputs.length === 0) {
-        if (!process.stdout.isTTY) {
-          console.error(
-            pc.red(
-              "\n❌ Error: Please specify at least one list or room name to reset.\n",
-            ),
-          );
-          process.exit(1);
-        }
-
-        // Interactive prompt to select what to reset
-        const allLists = getAllKnownLists();
-        const allRooms = getRooms();
-
-        type TargetChoice = {
-          type: "list" | "room";
-          name: string;
-          label: string;
-        };
-        const choices: { name: string; value: TargetChoice }[] = [];
-
-        allLists.forEach((l) => {
-          choices.push({
-            name: `📋 List: ${l.name} (${l.count.toLocaleString()} contacts)`,
-            value: {
-              type: "list",
-              name: l.isGlobal ? l.name.replace(/ \(Global\)$/, "") : l.name,
-              label: l.name,
-            },
-          });
-        });
-
-        allRooms.forEach((r) => {
-          const count = (r.groupIds ?? r.groupJidRowIds ?? []).length;
-          choices.push({
-            name: `🏠 Room: ${r.id} (${count} groups, list: ${r.targetList ?? r.id})`,
-            value: { type: "room", name: r.id, label: r.id },
-          });
-        });
-
-        if (choices.length === 0) {
-          console.log(pc.yellow("\nNo lists or rooms found to reset.\n"));
-          return;
-        }
-
-        const selected = await select<TargetChoice>({
-          message: "Select list or room to reset:",
-          choices,
-        });
-
-        if (selected.type === "room") {
-          const room = getRoomById(selected.name);
-          if (room) {
-            const listName = room.targetList
-              ? normalizeListName(room.targetList)
-              : room.id;
-            const groupRes = clearRoomGroups(room.id);
-            const listRes = clearListContacts(listName);
-            console.log(
-              pc.green(
-                `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.\n`,
-              ),
-            );
-          }
-        } else {
-          const res = clearListContacts(selected.name);
-          console.log(
-            pc.green(
-              `\n🧹 Reset list '${selected.name}': cleared ${res.clearedCount.toLocaleString()} contacts.\n`,
-            ),
-          );
-        }
-        return;
-      }
-
-      for (const target of inputs) {
-        const clean = target.trim();
-        if (!clean) continue;
-
-        if (options?.room) {
-          const room = getRoomById(clean);
-          if (!room) {
-            console.error(
-              pc.red(
-                `\n❌ Error: Room '${clean}' not found. Use 'wape rooms list' to see all rooms.\n`,
-              ),
-            );
-            continue;
-          }
-          const listName = room.targetList
-            ? normalizeListName(room.targetList)
-            : room.id;
-          const groupRes = clearRoomGroups(room.id);
-          const listRes = clearListContacts(listName);
-          console.log(
-            pc.green(
-              `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
-            ),
-          );
-          continue;
-        }
-
-        if (options?.list) {
-          const res = clearListContacts(clean);
-          if (!res.success) {
-            console.error(
-              pc.red(
-                `\n❌ Error: List '${clean}' not found. Use 'wape lists' to see all lists.\n`,
-              ),
-            );
-            continue;
-          }
-          console.log(
-            pc.green(
-              `\n🧹 Reset list '${clean}': cleared ${res.clearedCount.toLocaleString()} contacts.`,
-            ),
-          );
-          continue;
-        }
-
-        // Neither flag explicitly passed: check if matching room exists first
-        const room = getRoomById(clean);
-        if (room) {
-          const listName = room.targetList
-            ? normalizeListName(room.targetList)
-            : room.id;
-          const groupRes = clearRoomGroups(room.id);
-          const listRes = clearListContacts(listName);
-          console.log(
-            pc.green(
-              `\n🧹 Reset room '${room.id}': cleared ${groupRes.clearedGroupsCount} groups and ${listRes.clearedCount.toLocaleString()} contacts from '${listName}'.`,
-            ),
-          );
-          continue;
-        }
-
-        // Check if matching list exists
-        const listRes = clearListContacts(clean);
-        if (listRes.success) {
-          console.log(
-            pc.green(
-              `\n🧹 Reset list '${clean}': cleared ${listRes.clearedCount.toLocaleString()} contacts.`,
-            ),
-          );
-        } else {
-          console.error(
-            pc.red(
-              `\n❌ Error: No room or list found matching '${clean}'. Use 'wape rooms list' or 'wape lists'.\n`,
-            ),
-          );
-        }
-      }
-      console.log("");
-    },
-  );
-
-/**
  * Contact Source / Provenance Command
  */
 const sourceCmd = program
@@ -3679,7 +3813,6 @@ const sourceCmd = program
   .action((numbers?: string[]) => {
     let inputs = numbers ? [...numbers] : [];
 
-    // If no numbers were passed as CLI arguments, check if stdin has piped data
     if (inputs.length === 0 && !process.stdin.isTTY) {
       try {
         const stdinData = readFileSync(0, "utf-8");
@@ -3789,6 +3922,81 @@ const sourceCmd = program
       console.log("\n" + "=".repeat(66) + "\n");
     }
   });
+
+/**
+ * Backward-Compatibility Root Command Aliases (Hidden from help)
+ */
+program
+  .command("audit [id]", { hidden: true })
+  .description("Legacy alias for 'wape groups audit'")
+  .option(
+    "-t, --threshold <percent>",
+    "Audit room for groups exceeding non-Nigerian percentage threshold (default: 50)",
+  )
+  .option(
+    "-e, --exit",
+    "Scan all groups to find inactive, dead, temporary, or spam groups recommended for leaving/deleting",
+    false,
+  )
+  .option("--exitable", "Alias for --exit", false)
+  .option(
+    "-a, --all",
+    "Show all groups in the room, including non-flagged ones",
+    false,
+  )
+  .option(
+    "-i, --interactive-ignore",
+    "Interactively select flagged groups from the audit output to ignore from future audits",
+    false,
+  )
+  .option(
+    "-b, --backup <path>",
+    "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
+  )
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleAudit);
+
+program
+  .command("ignore [action]", { hidden: true })
+  .description("Legacy alias for 'wape groups ignore'")
+  .option("-b, --backup <path>", "Path to WhatsApp backup file")
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleIgnore);
+
+program
+  .command("ignored", { hidden: true })
+  .description("Legacy alias for 'wape groups ignored'")
+  .option("-b, --backup <path>", "Path to WhatsApp backup file")
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleIgnored);
+
+program
+  .command("unignore", { hidden: true })
+  .description("Legacy alias for 'wape groups unignore'")
+  .option("-b, --backup <path>", "Path to WhatsApp backup file")
+  .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .action(handleUnignore);
+
+program
+  .command("patch [args...]", { hidden: true })
+  .description("Legacy alias for 'wape lists import'")
+  .option("--main", "Patch into global main list")
+  .option("--lock", "Patch into global lock list")
+  .action(handlePatch);
+
+program
+  .command("unpatch [args...]", { hidden: true })
+  .description("Legacy alias for 'wape lists remove'")
+  .option("--main", "Unpatch from global main list")
+  .option("--lock", "Unpatch from global lock list")
+  .action(handleUnpatch);
+
+program
+  .command("reset [targets...]", { hidden: true })
+  .description("Legacy alias for 'wape lists clear'")
+  .option("--room", "Target a room instead of a list")
+  .option("--list", "Target a list instead of a room")
+  .action(handleReset);
 
 /**
  * Configuration Command

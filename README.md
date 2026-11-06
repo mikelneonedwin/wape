@@ -1,14 +1,14 @@
 # wape - WhatsApp Phone Extractor, Room Manager & List Aggregator
 
-A TypeScript CLI toolkit for decrypting WhatsApp backup databases, organizing WhatsApp groups into persistent **Rooms** in `~/.wape`, extracting unique Nigerian phone numbers, and managing multi-list and room-level comparisons.
+A TypeScript CLI toolkit for decrypting WhatsApp backup databases, organizing WhatsApp groups into persistent Rooms in `~/.wape`, extracting unique Nigerian phone numbers, and managing multi-list and room-level comparisons.
 
-> Note: `wape` uses [`wa-crypt-tools`](https://github.com/ElDavoo/wa-crypt-tools) under the hood and supports various WhatsApp backup versions (e.g. `.crypt12`, `.crypt14`, `.crypt15`), essentially any variant that can be cracked provided you supply the correct 64-character hex decryption key.
+> Note: `wape` uses [`wa-crypt-tools`](https://github.com/ElDavoo/wa-crypt-tools) under the hood and supports various WhatsApp backup versions (such as `.crypt12`, `.crypt14`, `.crypt15`), essentially any variant that can be decrypted provided you supply the matching 64-character hex decryption key.
 
 ---
 
 ## 🚀 Setup & Installation
 
-This toolkit requires a JavaScript/TypeScript package manager (Bun, pnpm, or npm) and Python 3 (for decryption).
+This toolkit requires a JavaScript/TypeScript runtime (Bun, pnpm, or npm) and Python 3 (for decryption tools).
 
 ### 1. Clone and Install Dependencies
 
@@ -36,7 +36,7 @@ Link `wape` to your global path to use the `wape` command anywhere in your termi
 bun link      # or: npm link / pnpm link
 ```
 
-_(If you prefer not to link globally, you can prefix any command with `bun run wape <command>` or `bun run <command>`)_.
+If you prefer not to link globally, you can prefix any command with `bun run wape <command>` or `bun run <command>`.
 
 ### 4. Configure Decryption Key
 
@@ -58,65 +58,124 @@ wape config set --backup /path/to/msgstore.db.crypt15
 
 ---
 
-## 🛠 Available Commands
+## ⚡ Daily Workflows
 
-### 1. Configuration (`wape config`)
+The root CLI is centered on five everyday verbs for extraction, comparison, and analysis.
 
-Manage settings stored in `~/.wape/config.json`.
+### 1. Group & Room Scanning (`wape scan`)
+
+Extracts and sieves unique Nigerian phone numbers from selected groups or configured rooms with live search and community nesting.
 
 ```bash
-# View active configuration
-wape config get
+# Interactive scan (choose from a configured room or pick ad-hoc groups)
+wape scan
 
-# Set decryption key or custom backup path
-wape config set --key <64-hex-key>
-wape config set --backup <path>
+# Scan directly from a room by ID (saves to lists/<room-id>.txt)
+wape scan my-room
 
-# Lock in two default rooms for bundle and compare operations
-wape config set --default-compare room1 room2
+# Direct output to a specific list name or file
+wape scan my-room --to leads
+wape scan my-room --to main
+wape scan my-room --to lock
+
+# Include ignored groups in ad-hoc selection
+wape scan --include-ignored
+
+# Scan using an ad-hoc backup and key with an audit label
+wape scan -k <key> -b /path/to/backup.crypt15 -l "Work Phone"
 ```
 
----
+### 2. Bundle Contacts & Group Links (`wape bundle`)
 
-### 2. Contact Provenance & Origin Lookup (`wape source`)
+Performs a general room scan of all configured rooms to update their contact lists, compares the target rooms or lists to filter down strictly to newly discovered common contacts, extracts all new WhatsApp group invite links from the backup database, prints only the new items to the terminal, and copies both together to your clipboard in a single step.
 
-Inspect any Nigerian phone number to view all WhatsApp groups, parent communities, backup sources (primary vs. labeled one-offs), and lists it was identified in:
+```bash
+# Compare specific rooms and bundle new contacts + new links
+wape bundle gunner norm
+wape bundle roomA roomB roomC
+
+# Bundle ad-hoc lists or .vcf files
+wape bundle list1.txt leads.vcf
+
+# Default bundle (uses defaultCompareRooms or compares all configured rooms)
+wape bundle
+```
+
+### 3. Compare Contacts (`wape compare`)
+
+Finds contacts present in all target lists, rooms, or vCard (`.vcf`) files, and prints each number in `XXXX XXX XXXX` format (such as `0803 123 4567`) line by line for quick copy-pasting. You can compare across two or more targets simultaneously.
+
+`wape compare` automatically maintains an order-independent record in SQLite. Any newly discovered common contacts are highlighted with a `[NEW]` badge, automatically copied to your clipboard, and recorded so they are no longer marked as new on subsequent comparisons.
+
+```bash
+# Compare global main and lock lists (default if no targets provided)
+wape compare
+
+# Compare two or more specific lists or rooms
+wape compare <target1> <target2> [target3...]
+
+# Compare a VCF file with a room or list
+wape compare contacts.vcf my-room
+
+# Optional source tracing: inspect where common contacts originated
+wape compare roomA roomB --source
+wape compare roomA roomB -s
+```
+
+### 4. Contact Statistics & Unions (`wape stats`)
+
+Computes aggregated stats totals across lists and rooms:
+
+- Running without arguments prints a global inventory across all lists and the grand unique union.
+- Passing one target shows the contact count for that specific list or room.
+- Passing two targets performs a comparative analysis with intersection, union, and overlap percentage.
+- Passing three or more targets aggregates all lists into a combined grand unique total.
+
+```bash
+# Global overview of all lists and grand unique union
+wape stats
+
+# Stats for a single specific list or room
+wape stats my-room
+
+# Comparative stats (totals, overlap, and union for two lists)
+wape stats roomA roomB
+
+# Multi-target stats (aggregates multiple lists or rooms into a combined unique total)
+wape stats roomA roomB roomC
+```
+
+### 5. Contact Origin Lookup (`wape source`)
+
+Inspect any Nigerian phone number to view all WhatsApp groups, parent communities, backup sources (primary vs. labeled ad-hoc runs), and lists where that contact was found.
 
 ```bash
 # Inspect contact origins
 wape source 08012345678
 wape source 08012345678 08098765432
+
+# Pipe numbers from a list or terminal command
+cat leads.txt | wape source
 ```
 
 ---
 
-### 3. Room Management (`wape rooms`)
+## 🏠 Room Management (`wape rooms`)
 
-Rooms group related WhatsApp chats into persistent bundles stored in `~/.wape/rooms.json`. Each room automatically maps to its dedicated contact list file (`~/.wape/lists/<id>.txt`).
+Rooms group related WhatsApp chats into persistent bundles stored in the database. Each room automatically maps to its dedicated contact list file (`~/.wape/lists/<id>.txt`).
 
 ```bash
-# List all configured rooms with group and contact stats
+# List all configured rooms with group and contact counts (default action)
+wape rooms
 wape rooms list
+
+# Show room details, included groups, and exited/missing status
+wape rooms show <id>
 
 # Create a new room with an explicit ID
 wape rooms new <id>
 
-# View room details, included groups, and exited/missing status
-wape rooms info [id]
-
-# Print out only the groups configured in a room
-wape rooms groups [id]
-
-# Print absolute path to a room's contact list file
-wape rooms path <id>
-
-# Patch/import contacts from external text/vCard (.vcf) file(s) into a room's list
-wape rooms patch <id> <file1.vcf> [file2.txt...]
-
-# Unpatch/remove contacts present in external text/vCard (.vcf) file(s) from a room's list
-wape rooms unpatch <id> <file1.vcf> [file2.txt...]
-
-# Add new groups to an existing room (filters out groups already in this room or other rooms)
+# Add new groups to an existing room
 wape rooms add [id]
 
 # Remove groups from an existing room
@@ -128,33 +187,20 @@ wape rooms rename <oldId> <newId>
 # Delete one or more rooms by ID
 wape rooms delete <id> [id2...]
 
-# Compare contact lists across rooms (defaults to all configured rooms)
-wape rooms compare
-wape rooms compare <id1> <id2> [id3...]
-
-# Display identified group sources alongside each common contact
-wape rooms compare --source
-wape rooms compare <id1> <id2> --source
-
-# Compare rooms and bundle new contacts + new links to clipboard
-wape rooms bundle <id1> <id2> [id3...]
-
-# Scan ALL configured rooms (or pass specific room IDs)
-wape rooms scan
-wape rooms scan <id> [id2...]
-wape rooms scan --main
-wape rooms scan --lock
+# Print the contact list name for a room
+wape rooms path <id>
 ```
 
 ---
 
-### 4. Groups & Ranking (`wape groups`)
+## 👥 Group Curation & Auditing (`wape groups`)
 
-List all active WhatsApp group chats and their member counts, organized hierarchically by community or ranked globally by membership:
+List all active WhatsApp group chats and their member counts, organized hierarchically by parent community or ranked globally by membership size.
 
 ```bash
 # List all active WhatsApp groups grouped by community with member counts
 wape groups
+wape groups list
 
 # Rank all groups from most to least members regardless of community
 wape groups --rank
@@ -162,226 +208,143 @@ wape groups --rank
 # Filter groups to a specific configured room
 wape groups --room <room-id>
 
-# Rank groups within a specific room by member count
-wape groups --room <room-id> --rank
-
-# Specify custom backup or key
-wape groups --backup /path/to/backup.crypt15 --key <hex-key>
+# Search historical groups recorded from past scans
+wape groups --history "Design"
+wape groups --history --rank
 ```
 
-#### Community Structure & Badges:
+### Group Audits (`wape groups audit`)
 
-- **`[🏛️ Community Record]`**: WhatsApp's parent community anchor record. Represents the directory of all members across the entire community (deduplicated total member count across announcements and subgroups), distinguishing it from normal group chats.
-- **`└─ [Announcement]`**: The broadcast channel for the community.
-- **`└─ <Subject>`**: Subgroups and topical discussion channels nested under the community.
-- **`[Standalone] • <Subject>`**: Independent groups not associated with any WhatsApp community.
-
----
-
-### 5. Group & Room Scanning (`wape scan`)
-
-Extracts and sieves unique Nigerian phone numbers from selected groups or configured rooms with live search and community nesting.
+Audit your WhatsApp groups to manage room demographics or identify inactive, spam, or exitable groups to leave and prune:
 
 ```bash
-# Interactive scan (choose from a configured room or pick ad-hoc groups)
-wape scan
+# Audit a room for non-Nigerian demographic majority (default: >50%)
+wape groups audit [id]
 
-# Scan directly from a room by ID (saves to lists/<room-id>.txt)
-wape scan <room-id>
+# Room demographic audit with custom threshold percentage (-t, --threshold)
+wape groups audit [id] -t 40
 
-# Scan and direct output to a specific list file or global lists
-wape scan -t leads.txt
-wape scan <room-id> --main
-wape scan <room-id> --lock
+# Show all groups in the room, including non-flagged ones
+wape groups audit [id] --all
 
-# Include ignored groups in ad-hoc selection
-wape scan --include-ignored
+# Scan all groups across your backup to recommend groups to leave or delete (-e, --exit)
+wape groups audit -e
+
+# Audit only groups within a specific configured room for exit recommendations
+wape groups audit [id] -e
+
+# Interactively select flagged groups from audit output to ignore from future audits
+wape groups audit [id] -i
+wape groups audit -e -i
 ```
 
----
+The exitable audit (`-e, --exit`) detects:
 
-### 6. Ignored Groups Management (`wape ignore`, `wape ignored`, `wape unignore`)
+- Left but undeleted chats where you have exited but cached history remains.
+- Inactive or dead groups with zero messages in more than 90 days.
+- Temporary or expired event groups whose activity spiked and flatlined.
+- Turnstile groups dominated by join and leave notifications.
+- Spam groups dominated by standalone promotional links with zero discussion.
+- Depleted or abandoned groups with two or fewer participants.
 
-Mark personal, family, or irrelevant WhatsApp groups as ignored to prevent them from ever being added to any room (`wape rooms new`, `wape rooms add`) or appearing in ad-hoc scans (`wape scan`). Ignored groups are stored persistently by WhatsApp JID in `~/.wape/ignored-groups.json`.
+### Ignored Groups (`wape groups ignore`, `unignore`, `ignored`)
+
+Mark personal, family, or irrelevant WhatsApp groups as ignored to prevent them from ever being added to rooms or appearing in ad-hoc scans. Ignored groups are stored persistently by WhatsApp JID.
 
 ```bash
 # Interactively mark groups as ignored
-wape ignore
+wape groups ignore
 
 # View all currently ignored groups with their communities and member counts
-wape ignored
-wape ignore list
+wape groups ignored
 
 # Interactively unmark / restore previously ignored groups
-wape unignore
+wape groups unignore
 ```
 
 ---
 
-### 7. One-Off Databases & Keys (`wape oneoff`)
+## 📋 Contact Lists Repository (`wape lists`)
 
-Scan temporary or one-off WhatsApp backup databases using a dedicated one-off decryption key without touching or overwriting `config.json`. The `--key` (`-k`) option is required, while `--backup` (`-b`) is optional (falls back to auto-discovery if omitted).
-
-```bash
-# Scan groups from a one-off backup and select destination interactively
-wape oneoff scan -k <64-char-hex-key> -b /path/to/one-off.crypt15
-
-# One-off scan using backup auto-discovery, targeting an existing list
-wape oneoff scan -k <64-char-hex-key> -t leads
-wape oneoff scan -k <64-char-hex-key> --main
-wape oneoff scan -k <64-char-hex-key> --lock
-
-# Extract group invite links from a one-off backup
-wape oneoff links -k <64-char-hex-key> -b /path/to/one-off.crypt15
-
-# One-off bundle: scan groups into a list/room, run comparison across default rooms, extract invite links, and copy both
-wape oneoff bundle -k <64-char-hex-key> -b /path/to/one-off.crypt15
-wape oneoff bundle -k <64-char-hex-key> -t leads
-
-# Export chat transcript from a one-off backup
-wape oneoff chats export "Design Team" -k <64-char-hex-key> -b /path/to/one-off.crypt15
-wape oneoff chats export 08076488738 -k <64-char-hex-key> --since 3d
-
-# Search messages from a one-off backup
-wape oneoff chats search "chat.whatsapp.com" -k <64-char-hex-key> -b /path/to/one-off.crypt15
-wape oneoff chats search "modools" -k <64-char-hex-key> --since 7d --count
-```
-
----
-
-### 8. Compare Contacts (Intersection) (`wape compare`)
-
-Finds contacts present in ALL target lists, rooms, or vCard (`.vcf`) files, and prints each number in `"XXXX XXX XXXX"` format (e.g. `0803 123 4567`) line by line for quick copy-pasting. You can compare across 2 or more targets simultaneously.
-
-`wape compare` automatically maintains an order-independent record in `~/.wape/comparisons.json`. Any newly discovered common contacts are highlighted with a `[NEW]` badge, automatically copied to your clipboard (each item on its own new line with the `[NEW]` tag), and recorded so they are no longer marked as new on subsequent comparisons.
+Manage contact list files, view counts, and import or remove contacts using external text and vCard files.
 
 ```bash
-# Compare global main.txt and lock.txt (default if no targets provided)
-wape compare
-
-# Compare two or more specific lists or rooms
-wape compare <target1> <target2> [target3...]
-
-# Display identified group sources alongside each common contact
-wape compare --source
-wape compare <target1> <target2> --source
-
-# Compare a VCF file with a room or list
-wape compare contacts.vcf my-room
-```
-
----
-
-### 9. Bundle Contacts & Group Links (`wape bundle`)
-
-Performs a general room scan of all configured rooms to update their contact lists, compares the target rooms or lists to filter down strictly to **newly discovered common contacts**, extracts all **new WhatsApp group invite links** from the backup database, prints only the new items to the terminal, and copies both together to your clipboard in a single step.
-
-```bash
-# Compare rooms and bundle new contacts + new links
-wape bundle gunner norm
-wape bundle roomA roomB roomC
-
-# Bundle ad-hoc lists or .vcf files
-wape bundle list1.txt leads.vcf
-
-# Default (compares all configured rooms or main & lock)
-wape bundle
-```
-
----
-
-### 10. Stats & Union Breakdown (`wape stats`)
-
-Computes aggregated stats totals across lists and rooms:
-
-- **0 arguments**: Global overview of all lists in `lists/` and grand unique union.
-- **1 argument**: Contact count and stats for that specific list or room.
-- **2 arguments**: Comparative analysis (totals, overlap, and union).
-- **>2 arguments**: Aggregates all targets into a combined unique total.
-
-```bash
-# Global overview of all lists and grand unique union
-wape stats
-
-# Stats for a single specific list or room
-wape stats <target>
-
-# Comparative stats (compares totals, overlap, and union for two lists)
-wape stats <target1> <target2>
-
-# Multi-target stats (aggregates multiple lists or rooms into a combined unique total)
-wape stats <target1> <target2> <target3>
-```
-
----
-
-### 11. Patch & Import Contacts (`wape patch`)
-
-Import and merge contacts from external text or vCard (`.vcf`) file(s) directly into global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
-
-```bash
-# Patch external text or VCF file(s) into global main list
-wape patch --main leads.txt contacts.vcf
-
-# Patch external text or VCF file(s) into global lock list
-wape patch --lock locked_numbers.vcf
-
-# Patch external text or VCF file(s) into a specific room or custom list target
-wape patch <target> contacts.vcf extra.txt
-```
-
----
-
-### 12. Unpatch & Remove Contacts (`wape unpatch`)
-
-Remove contacts present in external text or vCard (`.vcf`) file(s) from global lists (`main.txt` / `lock.txt`) or any target room/custom list file:
-
-```bash
-# Unpatch/remove contacts in VCF file(s) from global main list
-wape unpatch --main contacts.vcf
-
-# Unpatch/remove contacts in VCF file(s) from global lock list
-wape unpatch --lock contacts.vcf
-
-# Unpatch/remove contacts in VCF file(s) from a specific room or custom list target
-wape unpatch <target> contacts.vcf
-```
-
----
-
-### 13. Print Contacts (`wape print`)
-
-Prints all phone numbers in a specific room or list, strictly one per line, in `"XXXX XXX XXXX"` format.
-
-```bash
-wape print <target>
-```
-
----
-
-### 14. Contact Lists Repository (`wape lists`)
-
-Shows all contact list files currently managed in the active lists directory and their contact counts.
-
-```bash
+# List all managed contact lists and their contact counts (default action)
 wape lists
+
+# Print all phone numbers in a specific room or list in "XXXX XXX XXXX" format
+wape lists print <target>
+wape print <target>
+
+# Import and merge contacts from external text or vCard (.vcf) files
+wape lists import <target> contacts.vcf extra.txt
+wape lists import main leads.vcf
+wape lists import lock locked_numbers.vcf
+
+# Remove contacts present in external files from a list or room
+wape lists remove <target> contacts.vcf
+wape lists remove main unsubscribed.txt
+
+# Empty contacts from a specific list
+wape lists clear <target>
+
+# Compute stats across lists
+wape lists stats roomA roomB
 ```
 
 ---
 
-### 15. WhatsApp Group Links Extractor (`wape links`)
+## 🔗 WhatsApp Group Invite Links (`wape links`)
 
-Scans all messages (groups and direct 1-on-1 DMs) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans search parameters, filters out links previously saved in `links.json`, automatically records newly found links into `links.json`, prints them one per line to the terminal, and copies them to your clipboard.
+Discover new WhatsApp group invite links from messages or search through your local history of recorded links.
+
+### 1. Extract New Links from Backups (`wape links`)
+
+Scans all messages (groups and direct chats) across your decrypted WhatsApp backup for group invite links (`https://chat.whatsapp.com/...`), cleans tracking parameters, filters out links previously saved, records newly found links into storage, prints them to the terminal, and copies them to your clipboard.
 
 ```bash
+# Extract all new group invite links from the current backup
 wape links
+
+# Extract links from an ad-hoc backup
+wape links -b /path/to/backup.crypt15 -k <key>
+```
+
+### 2. Search Link History (`wape links history`)
+
+Filter through previously saved group invite links using duration or date window flags. When run in an interactive terminal, it copies matching links to your clipboard. When piped or redirected, it streams raw URLs directly to standard output without touching your clipboard.
+
+```bash
+# Print and copy all extracted group invite links
+wape links history
+
+# Filter links extracted from messages in the last 7 days
+wape links history --since 7d
+
+# Limit to the last N most recent links
+wape links history --last 20
+wape links history --since 30d --last 40
+
+# Count the matching links without printing them
+wape links history --count
+wape links history --since 7d --count
+
+# Filter links within a date window
+wape links history --from 2026-01-01 --to 2026-03-31
+
+# Stream directly to stdout when piped (clipboard copying disabled)
+wape links history --since 1w | sort -u
 ```
 
 ---
 
-### 16. Chat Transcript Export (`wape chats export`)
+## 💬 Chat Transcripts & Message Search (`wape chats`)
 
-Exports formatted WhatsApp chat transcripts for a contact phone number, direct message chat, group, or username in the native WhatsApp copied format (`[DD/MM, HH:mm] Sender: Message`).
+Export formatted WhatsApp chat transcripts or search message contents across all conversations.
+
+### 1. Chat Transcript Export (`wape chats export`)
+
+Exports formatted WhatsApp chat transcripts for a contact phone number, direct message chat, group, or username in native WhatsApp copied format (`[DD/MM, HH:mm] Sender: Message`).
 
 By default, copies the transcript to your clipboard when run interactively, or streams the raw transcript directly to `stdout` when piped or redirected.
 
@@ -392,10 +355,10 @@ wape chats export
 # Filter interactive group picker to only groups in a specific room
 wape chats export --room Marketing
 
-# Search groups by name (auto-selects if 1 match, or filters interactive picker)
+# Search groups by name (auto-selects if one match, or filters picker)
 wape chats export --group-search "Design" --room Marketing --since 3d
 
-# Export exact group or contact by name / phone (case-insensitive full match)
+# Export exact group or contact by name or phone number
 wape chats export "Design Team"
 wape chats export 08076488738
 
@@ -413,35 +376,9 @@ wape chats export 08076488738 --to 2026-02-01
 wape chats export 08076488738 --last-month
 ```
 
-### 17. Chat Links Filtering (`wape chats links`)
+### 2. Message Content Search (`wape chats search`)
 
-Filters through messages across all chats to extract WhatsApp group invite links, supporting optional `--since`, `--from`, `--to`, `--last`, and `--count` flags. By default, prints the links and copies them to the clipboard. When piped or redirected, streams the raw links directly to `stdout` without copying to the clipboard:
-
-```bash
-# Print and copy all extracted group invite links
-wape chats links
-
-# Filter links extracted from messages in the last 7 days
-wape chats links --since 7d
-
-# Limit to the last N most recent links
-wape chats links --last 20
-wape chats links --since 30d --last 40
-
-# Count the matching links without printing or copying them
-wape chats links --count
-wape chats links --since 7d --count
-
-# Filter links within a date window
-wape chats links --from 2026-01-01 --to 2026-03-31
-
-# Stream directly to stdout when piped (clipboard copying disabled)
-wape chats links --since 1w | sort -u
-```
-
-### 18. Message Origin Search (`wape chats search`)
-
-Searches across all WhatsApp groups and chats for messages matching a keyword or URL pattern (ideal for finding WhatsApp group invite links). Displays the group name, sender name/phone, timestamp, and message text:
+Searches across all WhatsApp groups and chats for messages matching a keyword or URL pattern. Displays the group name, sender, timestamp, and message text:
 
 ```bash
 # Search for WhatsApp group invite links
@@ -457,43 +394,40 @@ wape chats search "modools" --since 7d --limit 10
 
 ---
 
-### 19. Group Audits (`wape audit`)
+## 🧰 Ad-Hoc & Secondary Backups
 
-Audit your WhatsApp groups to manage room demographics or identify groups to leave and prune:
+You do not need separate commands to inspect one-off or client backups. Any command that reads backup data (`scan`, `bundle`, `groups`, `chats`, `links`) accepts `-b, --backup <path>`, `-k, --key <hex>`, and optional `-l, --label <name>`.
+
+When passed, `wape` decrypts and processes that database without overwriting your global `~/.wape/config.json`. The optional `--label` flag tags contact provenance so you can later trace numbers back to that specific client or phone using `wape source`.
 
 ```bash
-# Audit a room for non-Nigerian demographic majority (prompts if room ID is omitted)
-wape audit [id]
+# Scan groups from a client backup directly into a list
+wape scan -k <key> -b /path/to/client.crypt15 -l "Client A" --to leads
 
-# Room demographic audit with custom threshold percentage (-t, --threshold)
-wape audit [id] -t 40
-wape audit [id] --threshold 40
+# Extract links from a secondary backup
+wape links -k <key> -b /path/to/client.crypt15
 
-# Show all groups in the room, including non-flagged ones
-wape audit [id] --all
-
-# Scan all groups across your entire backup to recommend groups to leave or delete (-e, --exit)
-wape audit -e
-wape audit --exit
-
-# Audit only groups within a specific configured room for exit recommendations
-wape audit [id] -e
-wape audit [id] --exit
-
-# Interactively select flagged groups from audit output to ignore from future audits (-i, --interactive-ignore)
-wape audit [id] -i
-wape audit -e -i
-wape audit [id] -e -i
+# Search messages in a one-off database
+wape chats search "invoice" -k <key> -b /path/to/client.crypt15
 ```
 
-`wape audit -e` / `wape audit --exit` detects:
+---
 
-- **Left but Undeleted Chats**: Groups you have exited, but cached chat history and messages remain in storage.
-- **Inactive / Completely Dead Groups**: Groups with zero messages in months (>90 days).
-- **Temporary / Expired Event Groups**: One-time event or cohort groups (e.g. hackathons, weddings, planning committees, past years) whose activity spiked and has flatlined.
-- **Turnstile Groups**: Groups where the vast majority of recent activity is just members joining and leaving with no real conversation.
-- **Spam & Link Dumps**: Groups dominated by standalone promotional links with zero discussion.
-- **Depleted / Abandoned Groups**: Groups with 2 or fewer participants or where all admins have left.
+## ⚙️ Configuration (`wape config`)
+
+Manage settings stored in `~/.wape/config.json`.
+
+```bash
+# View active configuration
+wape config get
+
+# Set decryption key or custom backup path
+wape config set --key <64-hex-key>
+wape config set --backup <path>
+
+# Lock in two default rooms for bundle and compare operations
+wape config set --default-compare room1 room2
+```
 
 ---
 
@@ -507,5 +441,6 @@ export WAPE_HOME="/path/to/custom/wape/dir"
 
 Directory structure:
 
-- **`wape.db`**: Embedded SQLite database containing all contact indexes, list memberships, room definitions, group mappings, provenance relations, saved links, and comparisons.
-- **`config.json`**: Global environment configuration (decryption key, backup path, and default comparison rooms).
+- `wape.db`: Embedded SQLite database containing all contact indexes, list memberships, room definitions, group mappings, provenance relations, saved links, and comparisons.
+- `config.json`: Global environment configuration (decryption key, backup path, and default comparison rooms).
+- `lists/`: Plain-text contact lists exported or imported by rooms and custom list commands.
