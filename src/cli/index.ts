@@ -84,7 +84,10 @@ import {
   saveLinks,
   saveNotedComparison,
   searchOneoffGroups,
+  syncRoomsBatchToStore,
   type AppConfig,
+  type BatchRoomScanItem,
+  type BatchRoomScanProvenanceItem,
   type RecordProvenanceGroupItem,
   type Room,
 } from "../services/wape-store";
@@ -507,6 +510,135 @@ async function executeGroupExport(
     `${pc.bold("Total Contacts in List:")}  ${pc.magenta(mergeResult.totalCount.toLocaleString())}`,
   );
   console.log("=".repeat(52) + "\n");
+}
+
+async function scanMultipleRooms(
+  db: ReturnType<typeof getDatabase>,
+  groups: Awaited<ReturnType<typeof fetchAllGroups>>,
+  rooms: Room[],
+  opts?: {
+    scanType?: "primary" | "oneoff";
+    sourceLabel?: string;
+    ownerPhone?: string | null;
+  },
+) {
+  if (rooms.length === 0) return;
+
+  const roomItems: BatchRoomScanItem[] = [];
+  const allActiveJidSet = new Set<number>();
+  const roomResolvedMap = new Map<
+    string,
+    ReturnType<typeof resolveRoomGroups>
+  >();
+
+  for (const room of rooms) {
+    const resolved = resolveRoomGroups(room, groups);
+    roomResolvedMap.set(room.id, resolved);
+    const activeJids = resolved.activeJidRowIds;
+    for (const jid of activeJids) {
+      allActiveJidSet.add(jid);
+    }
+    const targetListName = room.targetList
+      ? normalizeListName(room.targetList)
+      : room.id;
+    roomItems.push({
+      roomId: room.id,
+      targetListName,
+      activeJidRowIds: activeJids,
+    });
+  }
+
+  // Single batch extraction of contacts from WhatsApp database for all rooms
+  const allActiveJids = Array.from(allActiveJidSet);
+  const extraction = await extractNigerianNumbersWithGroupMapping(
+    db,
+    allActiveJids,
+  );
+
+  const provenanceGroups: BatchRoomScanProvenanceItem[] = allActiveJids.map(
+    (jidRowId) => {
+      const gMeta = groups.find((g) => g.jidRowId === jidRowId);
+      const phones = Array.from(extraction.groupPhonesMap.get(jidRowId) ?? []);
+      return {
+        jidRowId,
+        jid: gMeta?.jidString ?? String(jidRowId),
+        subject: gMeta?.subject ?? `Group ${jidRowId}`,
+        communityName: gMeta?.communityName ?? null,
+        phones,
+      };
+    },
+  );
+
+  const syncResults = syncRoomsBatchToStore({
+    scanType: opts?.scanType ?? "primary",
+    sourceLabel:
+      opts?.sourceLabel ??
+      (opts?.scanType === "oneoff" ? "One-off Backup" : "Primary Backup"),
+    ownerPhone: opts?.ownerPhone ?? null,
+    rooms: roomItems,
+    provenanceGroups,
+  });
+
+  // Print concise report per room
+  for (const room of rooms) {
+    const resolved = roomResolvedMap.get(room.id);
+    const activeJids = resolved?.activeJidRowIds ?? [];
+    const missingNames = (resolved?.resolvedItems ?? [])
+      .filter((i) => i.isMissing)
+      .map((i) => i.subject);
+
+    const missingBadge =
+      missingNames.length > 0
+        ? ` • ${pc.yellow(`${missingNames.length} missing/exited skipped`)}`
+        : "";
+
+    console.log(
+      pc.cyan(
+        `\n🏠 Scanning Room '${pc.bold(room.id)}' (${activeJids.length} active groups${missingBadge})...\n`,
+      ),
+    );
+
+    if (activeJids.length === 0) {
+      console.log(
+        pc.yellow(`No active groups to scan in room '${room.id}'.\n`),
+      );
+      continue;
+    }
+
+    const roomUniqueExtracts = new Set<string>();
+    for (const jid of activeJids) {
+      const phones = extraction.groupPhonesMap.get(jid);
+      if (phones) {
+        for (const p of phones) roomUniqueExtracts.add(p);
+      }
+    }
+
+    const roomRes = syncResults.get(room.id) ?? {
+      addedCount: 0,
+      totalCount: 0,
+    };
+    const targetListName = room.targetList
+      ? normalizeListName(room.targetList)
+      : room.id;
+
+    console.log(pc.green("=".repeat(52)));
+    console.log(pc.bold(pc.green("                 EXPORT REPORT")));
+    console.log("=".repeat(52));
+    console.log(
+      `${pc.bold("Target List:")}             ${pc.cyan(targetListName)}`,
+    );
+    console.log(`${pc.bold("Selected Groups:")}         ${activeJids.length}`);
+    console.log(
+      `${pc.bold("Unique Extracts Made:")}    ${pc.yellow(roomUniqueExtracts.size.toLocaleString())}`,
+    );
+    console.log(
+      `${pc.bold("New Contacts Added:")}      ${pc.green("+" + roomRes.addedCount.toLocaleString())}`,
+    );
+    console.log(
+      `${pc.bold("Total Contacts in List:")}  ${pc.magenta(roomRes.totalCount.toLocaleString())}`,
+    );
+    console.log("=".repeat(52) + "\n");
+  }
 }
 
 async function scanSingleRoom(
@@ -2066,8 +2198,12 @@ roomCmd
       console.log(
         pc.cyan(`\n🏠 Scanning all ${allRooms.length} configured room(s)...\n`),
       );
-      for (const room of allRooms) {
-        await scanSingleRoom(db, groups, room, opts);
+      if (opts?.main || opts?.lock) {
+        for (const room of allRooms) {
+          await scanSingleRoom(db, groups, room, opts);
+        }
+      } else {
+        await scanMultipleRooms(db, groups, allRooms);
       }
       return;
     }
@@ -2209,17 +2345,25 @@ async function executeBundle(
     key?: string;
   },
 ) {
-  const { db, groups } = await loadDbAndGroups(options?.backup, options?.key);
+  const dbPath = await ensureDecryptedDatabase({
+    backupPath: options?.backup,
+    backupKey: options?.key,
+  });
+  const db = getDatabase(dbPath);
 
-  // 1. General room scan (scan all configured rooms to update their list files)
+  // Fetch groups and links concurrently from the SQLite database
+  const [groups, allExtractedLinks] = await Promise.all([
+    fetchAllGroups(db),
+    extractWhatsAppGroupLinks(db),
+  ]);
+
+  // 1. General room scan (scan all configured rooms in batch to update their lists)
   const allRooms = getRooms();
   if (allRooms.length > 0) {
     console.log(
       pc.cyan(`\n🏠 Scanning all ${allRooms.length} configured room(s)...\n`),
     );
-    for (const room of allRooms) {
-      await scanSingleRoom(db, groups, room);
-    }
+    await scanMultipleRooms(db, groups, allRooms);
   }
 
   // 2. Calculate comparison diff (reads freshly updated room list files)
@@ -2228,7 +2372,6 @@ async function executeBundle(
   const newContacts = diff.newContacts;
 
   // 3. Extract new group invite links from backup database
-  const allExtractedLinks = await extractWhatsAppGroupLinks(db);
   const recordedLinks = new Set(getSavedLinks());
   const newLinks = allExtractedLinks.filter((link) => !recordedLinks.has(link));
 

@@ -6,7 +6,9 @@ import {
   getAllKnownLists,
   getContactsFromList,
   getNotedComparison,
+  getOrCreateList,
   getRoomById,
+  getWapeDb,
   normalizeListName,
   removeContactsFromList,
   saveContactsToList,
@@ -121,10 +123,29 @@ export function unmergeContactsFromFile(
 export function getCommonContacts(filePaths: string[]): string[] {
   if (filePaths.length === 0 || !filePaths[0]) return [];
 
-  // Start with the first set
-  let common = readContactsFromFile(filePaths[0]);
+  // Fast path: if all filePaths are database lists and not external physical files (.vcf or slash paths)
+  const isAllDbLists = filePaths.every((p) => !isExplicitPhysicalFile(p));
+  if (isAllDbLists) {
+    const db = getWapeDb();
+    const cleanNames = filePaths.map((p) => normalizeListName(p));
+    const placeholders = cleanNames.map(() => "?").join(",");
+    const rows = db
+      .query(
+        `SELECT c.phone
+         FROM contacts c
+         JOIN list_contacts lc ON c.id = lc.contact_id
+         JOIN lists l ON lc.list_id = l.id
+         WHERE l.name IN (${placeholders})
+         GROUP BY c.id, c.phone
+         HAVING COUNT(DISTINCT l.id) = ?
+         ORDER BY c.phone ASC`,
+      )
+      .all(...cleanNames, cleanNames.length) as { phone: string }[];
+    return rows.map((r) => r.phone);
+  }
 
-  // Intersect with remaining sets
+  // Fallback for external vCard or text files
+  let common = readContactsFromFile(filePaths[0]);
   for (let i = 1; i < filePaths.length; i++) {
     const path = filePaths[i];
     if (!path) continue;
@@ -179,6 +200,46 @@ export function getInventoryStats(
   labelA = "List A",
   labelB = "List B",
 ): InventoryStats {
+  const isDbA = !isExplicitPhysicalFile(fileAPath);
+  const isDbB = !isExplicitPhysicalFile(fileBPath);
+
+  if (isDbA && isDbB) {
+    const db = getWapeDb();
+    const nameA = normalizeListName(fileAPath);
+    const nameB = normalizeListName(fileBPath);
+    const listA = getOrCreateList(nameA);
+    const listB = getOrCreateList(nameB);
+
+    const rowA = db
+      .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+      .get(listA.id) as { cnt: number };
+    const rowB = db
+      .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+      .get(listB.id) as { cnt: number };
+    const commonRow = db
+      .query(
+        `SELECT COUNT(*) as cnt
+         FROM list_contacts lc1
+         JOIN list_contacts lc2 ON lc1.contact_id = lc2.contact_id
+         WHERE lc1.list_id = ? AND lc2.list_id = ?`,
+      )
+      .get(listA.id, listB.id) as { cnt: number };
+
+    const countA = rowA.cnt;
+    const countB = rowB.cnt;
+    const commonCount = commonRow.cnt;
+    const unionCount = countA + countB - commonCount;
+
+    return {
+      labelA,
+      labelB,
+      countA,
+      countB,
+      commonCount,
+      unionCount,
+    };
+  }
+
   const setA = readContactsFromFile(fileAPath);
   const setB = readContactsFromFile(fileBPath);
 
@@ -212,24 +273,42 @@ export interface GlobalInventorySummary {
  * Shows individual totals and the unique grand union of all lists without intersection clutter.
  */
 export function getGlobalInventory(): GlobalInventorySummary {
-  const knownLists = getAllKnownLists();
-  const grandUnion = new Set<string>();
+  const db = getWapeDb();
 
-  const listSummaries = knownLists.map((item) => {
-    const contacts = getContactsFromList(item.path);
-    for (const c of contacts) {
-      grandUnion.add(c);
-    }
-    return {
-      name: item.name,
-      path: item.path,
-      count: contacts.size,
-    };
-  });
+  // 1. Query individual list counts in one SQL pass
+  const countRows = db
+    .query(
+      `SELECT l.name, COUNT(lc.contact_id) as count
+       FROM lists l
+       LEFT JOIN list_contacts lc ON l.id = lc.list_id
+       GROUP BY l.id, l.name
+       ORDER BY l.id ASC`,
+    )
+    .all() as { name: string; count: number }[];
+
+  const countMap = new Map<string, number>();
+  for (const r of countRows) {
+    countMap.set(r.name.toLowerCase(), r.count);
+  }
+
+  const knownLists = getAllKnownLists();
+  const listSummaries = knownLists.map((item) => ({
+    name: item.name,
+    path: item.path,
+    count: countMap.get(item.name.toLowerCase()) ?? 0,
+  }));
+
+  // 2. Query grand unique total in SQLite
+  const grandTotalRow = db
+    .query(
+      `SELECT COUNT(DISTINCT contact_id) as grandTotal
+       FROM list_contacts`,
+    )
+    .get() as { grandTotal: number };
 
   return {
     lists: listSummaries,
-    grandUniqueTotal: grandUnion.size,
+    grandUniqueTotal: grandTotalRow.grandTotal,
   };
 }
 

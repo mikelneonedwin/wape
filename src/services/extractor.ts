@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { AppDatabase } from "../db";
-import { chats, groupParticipantUsers, jids } from "../db/schema";
+import { groupParticipantUsers, jids } from "../db/schema";
 import {
   normalizeNigerianPhoneNumber,
   normalizeOwnerPhoneNumber,
@@ -26,47 +26,52 @@ export interface GroupSummary {
  * direct node relationships, and participant containment in community announcement groups.
  */
 export async function fetchAllGroups(db: AppDatabase): Promise<GroupSummary[]> {
-  // 1. Query all group chats that have participants and a non-empty subject
-  const groupRows = await db
-    .select({
-      jidRowId: chats.jidRowId,
-      jidUser: jids.user,
-      jidServer: jids.server,
-      jidRawString: jids.rawString,
-      subject: chats.subject,
-      groupType: chats.groupType,
-      participantCount: sql<number>`count(${groupParticipantUsers.id})`.mapWith(
-        Number,
-      ),
-    })
-    .from(chats)
-    .innerJoin(
-      groupParticipantUsers,
-      sql`${chats.jidRowId} = ${groupParticipantUsers.groupJidRowId}`,
+  // 1. Query all group chats that have participants and a non-empty subject using raw SQL for maximum speed
+  const groupRows = db.$client
+    .query<
+      {
+        jidRowId: number;
+        jidUser: string | null;
+        jidServer: string | null;
+        jidRawString: string | null;
+        subject: string | null;
+        groupType: number | null;
+        participantCount: number;
+      },
+      []
+    >(
+      `SELECT
+         c.jid_row_id as jidRowId,
+         j.user as jidUser,
+         j.server as jidServer,
+         j.raw_string as jidRawString,
+         c.subject,
+         c.group_type as groupType,
+         count(gpu._id) as participantCount
+       FROM chat c
+       INNER JOIN group_participant_user gpu ON c.jid_row_id = gpu.group_jid_row_id
+       LEFT JOIN jid j ON c.jid_row_id = j._id
+       WHERE c.subject IS NOT NULL AND c.subject != ''
+       GROUP BY c.jid_row_id, j.user, j.server, j.raw_string, c.subject, c.group_type
+       ORDER BY c.subject COLLATE NOCASE ASC`,
     )
-    .leftJoin(jids, sql`${chats.jidRowId} = ${jids.id}`)
-    .where(sql`${chats.subject} IS NOT NULL AND ${chats.subject} != ''`)
-    .groupBy(
-      chats.jidRowId,
-      jids.user,
-      jids.server,
-      jids.rawString,
-      chats.subject,
-      chats.groupType,
-    )
-    .orderBy(sql`${chats.subject} COLLATE NOCASE ASC`);
+    .all();
 
   // 2. Query community parent root chats (group_type = 1)
-  const rootRows = await db
-    .select({
-      jidRowId: chats.jidRowId,
-      subject: chats.subject,
-      groupType: chats.groupType,
-    })
-    .from(chats)
-    .where(
-      sql`${chats.groupType} = 1 AND ${chats.subject} IS NOT NULL AND ${chats.subject} != ''`,
-    );
+  const rootRows = db.$client
+    .query<
+      {
+        jidRowId: number | null;
+        subject: string | null;
+        groupType: number | null;
+      },
+      []
+    >(
+      `SELECT jid_row_id as jidRowId, subject, group_type as groupType
+       FROM chat
+       WHERE group_type = 1 AND subject IS NOT NULL AND subject != ''`,
+    )
+    .all();
 
   const rootMap = new Map<number, string>();
   for (const root of rootRows) {
@@ -770,29 +775,31 @@ export async function extractNigerianNumbersWithGroupMapping(
     const query = `
       SELECT 
         gpu.group_jid_row_id as groupJidRowId,
-        j.user as user,
-        j.server as server,
-        pj.user as phoneUser,
-        pj.server as phoneServer
+        COALESCE(
+          CASE WHEN j.server = 's.whatsapp.net' THEN j.user END,
+          CASE WHEN pj.server = 's.whatsapp.net' THEN pj.user END
+        ) as phone
       FROM group_participant_user gpu
       LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
       LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
       LEFT JOIN jid pj ON jm.jid_row_id = pj._id
       WHERE gpu.group_jid_row_id IN (${placeholders})
+        AND (j.server = 's.whatsapp.net' OR pj.server = 's.whatsapp.net')
 
       UNION ALL
 
       SELECT 
         gpu.group_jid_row_id as groupJidRowId,
-        j.user as user,
-        j.server as server,
-        pj.user as phoneUser,
-        pj.server as phoneServer
+        COALESCE(
+          CASE WHEN j.server = 's.whatsapp.net' THEN j.user END,
+          CASE WHEN pj.server = 's.whatsapp.net' THEN pj.user END
+        ) as phone
       FROM group_past_participant_user gpu
       LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
       LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
       LEFT JOIN jid pj ON jm.jid_row_id = pj._id
       WHERE gpu.group_jid_row_id IN (${placeholders})
+        AND (j.server = 's.whatsapp.net' OR pj.server = 's.whatsapp.net')
     `;
 
     try {
@@ -800,29 +807,16 @@ export async function extractNigerianNumbersWithGroupMapping(
         .query(query)
         .all(...groupJidRowIds, ...groupJidRowIds) as {
         groupJidRowId: number;
-        user: string | null;
-        server: string | null;
-        phoneUser: string | null;
-        phoneServer: string | null;
+        phone: string | null;
       }[];
 
       for (const row of rows) {
-        let candidateNumber: string | null = null;
-        if (row.server === "s.whatsapp.net" && row.user) {
-          candidateNumber = row.user;
-        } else if (row.phoneServer === "s.whatsapp.net" && row.phoneUser) {
-          candidateNumber = row.phoneUser;
-        }
-
-        if (candidateNumber) {
-          const normalized = normalizeNigerianPhoneNumber(candidateNumber);
-          if (normalized) {
-            uniqueNigerianNumbers.add(normalized);
-            let gSet = groupPhonesMap.get(row.groupJidRowId);
-            if (!gSet) {
-              gSet = new Set<string>();
-              groupPhonesMap.set(row.groupJidRowId, gSet);
-            }
+        if (!row.phone) continue;
+        const normalized = normalizeNigerianPhoneNumber(row.phone);
+        if (normalized) {
+          uniqueNigerianNumbers.add(normalized);
+          const gSet = groupPhonesMap.get(row.groupJidRowId);
+          if (gSet) {
             gSet.add(normalized);
           }
         }
@@ -1163,10 +1157,10 @@ export async function auditGroupDemographics(
   const query = `
     SELECT 
       gpu.group_jid_row_id as groupJidRowId,
-      j.user as user,
-      j.server as server,
-      pj.user as phoneUser,
-      pj.server as phoneServer
+      COALESCE(
+        CASE WHEN j.server = 's.whatsapp.net' THEN j.user END,
+        CASE WHEN pj.server = 's.whatsapp.net' THEN pj.user END
+      ) as phone
     FROM group_participant_user gpu
     LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
     LEFT JOIN jid_map jm ON j._id = jm.lid_row_id
@@ -1176,10 +1170,7 @@ export async function auditGroupDemographics(
 
   let rows: {
     groupJidRowId: number;
-    user: string | null;
-    server: string | null;
-    phoneUser: string | null;
-    phoneServer: string | null;
+    phone: string | null;
   }[] = [];
 
   try {
@@ -1189,10 +1180,7 @@ export async function auditGroupDemographics(
     const fallbackQuery = `
       SELECT 
         gpu.group_jid_row_id as groupJidRowId,
-        j.user as user,
-        j.server as server,
-        NULL as phoneUser,
-        NULL as phoneServer
+        CASE WHEN j.server = 's.whatsapp.net' THEN j.user END as phone
       FROM group_participant_user gpu
       LEFT JOIN jid j ON gpu.user_jid_row_id = j._id
       WHERE gpu.group_jid_row_id IN (${placeholders})
@@ -1212,13 +1200,7 @@ export async function auditGroupDemographics(
 
     stats.total++;
 
-    let candidateNumber: string | null = null;
-    if (row.server === "s.whatsapp.net" && row.user) {
-      candidateNumber = row.user;
-    } else if (row.phoneServer === "s.whatsapp.net" && row.phoneUser) {
-      candidateNumber = row.phoneUser;
-    }
-
+    const candidateNumber = row.phone;
     if (candidateNumber) {
       const isNigerian = normalizeNigerianPhoneNumber(candidateNumber) !== null;
       if (isNigerian) {
@@ -1326,40 +1308,81 @@ export async function auditExitableGroups(
     groupMetaMap.set(g.jidRowId, g);
   }
 
-  // Check messages for left groups to confirm undeleted chat history
-  for (const [leftJid, subject] of leftJidMap.entries()) {
-    let msgCount = 0;
-    let lastTs: number | null = null;
+  // Check messages for left groups to confirm undeleted chat history in batch
+  const leftJids = Array.from(leftJidMap.keys());
+  if (leftJids.length > 0) {
     try {
-      const stats = db.$client
-        .query<{ count: number; maxTs: number | null }, [number]>(
-          `SELECT count(m._id) as count, max(m.timestamp) as maxTs 
-           FROM message m 
-           JOIN chat c ON m.chat_row_id = c._id 
-           WHERE c.jid_row_id = ?`,
+      const leftPlaceholders = leftJids.map(() => "?").join(",");
+      const batchRows = db.$client
+        .query<
+          { jidRowId: number; count: number; maxTs: number | null },
+          number[]
+        >(
+          `SELECT c.jid_row_id as jidRowId, count(m._id) as count, max(m.timestamp) as maxTs
+           FROM chat c
+           JOIN message m ON m.chat_row_id = c._id
+           WHERE c.jid_row_id IN (${leftPlaceholders})
+           GROUP BY c.jid_row_id`,
         )
-        .get(leftJid);
-      msgCount = stats?.count ?? 0;
-      lastTs = stats?.maxTs ?? null;
-    } catch {
-      // Fallback
-    }
+        .all(...leftJids);
 
-    if (msgCount > 0) {
-      const meta = groupMetaMap.get(leftJid);
-      exitable.push({
-        groupJidRowId: leftJid,
-        subject,
-        communityName: meta?.communityName ?? null,
-        totalMembers: meta?.participantCount ?? 0,
-        category: "left_undeleted",
-        reason: "Left group but chat history was never deleted.",
-        details: `You already left this group. ${msgCount.toLocaleString()} cached messages are still stored on your device.`,
-        lastMessageTimestamp: lastTs,
-        messageCount: msgCount,
-        isCommunityRoot: meta?.isCommunityRoot,
-        isAnnouncement: meta?.isAnnouncement,
-      });
+      for (const row of batchRows) {
+        if (row.count > 0) {
+          const subject =
+            leftJidMap.get(row.jidRowId) || `Group ${row.jidRowId}`;
+          const meta = groupMetaMap.get(row.jidRowId);
+          exitable.push({
+            groupJidRowId: row.jidRowId,
+            subject,
+            communityName: meta?.communityName ?? null,
+            totalMembers: meta?.participantCount ?? 0,
+            category: "left_undeleted",
+            reason: "Left group but chat history was never deleted.",
+            details: `You already left this group. ${row.count.toLocaleString()} cached messages are still stored on your device.`,
+            lastMessageTimestamp: row.maxTs,
+            messageCount: row.count,
+            isCommunityRoot: meta?.isCommunityRoot,
+            isAnnouncement: meta?.isAnnouncement,
+          });
+        }
+      }
+    } catch {
+      // Fallback if batch query fails
+      for (const [leftJid, subject] of leftJidMap.entries()) {
+        let msgCount = 0;
+        let lastTs: number | null = null;
+        try {
+          const stats = db.$client
+            .query<{ count: number; maxTs: number | null }, [number]>(
+              `SELECT count(m._id) as count, max(m.timestamp) as maxTs 
+               FROM message m 
+               JOIN chat c ON m.chat_row_id = c._id 
+               WHERE c.jid_row_id = ?`,
+            )
+            .get(leftJid);
+          msgCount = stats?.count ?? 0;
+          lastTs = stats?.maxTs ?? null;
+        } catch {
+          // Fallback
+        }
+
+        if (msgCount > 0) {
+          const meta = groupMetaMap.get(leftJid);
+          exitable.push({
+            groupJidRowId: leftJid,
+            subject,
+            communityName: meta?.communityName ?? null,
+            totalMembers: meta?.participantCount ?? 0,
+            category: "left_undeleted",
+            reason: "Left group but chat history was never deleted.",
+            details: `You already left this group. ${msgCount.toLocaleString()} cached messages are still stored on your device.`,
+            lastMessageTimestamp: lastTs,
+            messageCount: msgCount,
+            isCommunityRoot: meta?.isCommunityRoot,
+            isAnnouncement: meta?.isAnnouncement,
+          });
+        }
+      }
     }
   }
 
@@ -1382,40 +1405,29 @@ export async function auditExitableGroups(
   }
 
   // 3. Analyze active (non-exited) groups
-  for (const g of allGroups) {
-    if (leftJidMap.has(g.jidRowId)) {
-      continue; // Handled under left_undeleted
-    }
+  interface GroupMsgStats {
+    total: number;
+    minTs: number | null;
+    maxTs: number | null;
+    systemCount: number;
+    textCount: number;
+    linkCount: number;
+    recentTotal: number;
+    recentSystem: number;
+  }
 
-    // Retrieve message statistics for this group
-    interface GroupMsgStats {
-      total: number;
-      minTs: number | null;
-      maxTs: number | null;
-      systemCount: number;
-      textCount: number;
-      linkCount: number;
-      recentTotal: number;
-      recentSystem: number;
-    }
+  const activeGroups = allGroups.filter((g) => !leftJidMap.has(g.jidRowId));
+  const activeJids = activeGroups.map((g) => g.jidRowId);
+  const recentCutoff = now - inactiveThresholdMs;
+  const groupStatsMap = new Map<number, GroupMsgStats>();
 
-    let stats: GroupMsgStats = {
-      total: 0,
-      minTs: null,
-      maxTs: null,
-      systemCount: 0,
-      textCount: 0,
-      linkCount: 0,
-      recentTotal: 0,
-      recentSystem: 0,
-    };
-
-    const recentCutoff = now - inactiveThresholdMs;
-
+  if (activeJids.length > 0) {
     try {
-      const row = db.$client
+      const activePlaceholders = activeJids.map(() => "?").join(",");
+      const batchStats = db.$client
         .query<
           {
+            jidRowId: number;
             total: number;
             minTs: number | null;
             maxTs: number | null;
@@ -1425,9 +1437,10 @@ export async function auditExitableGroups(
             recentTotal: number;
             recentSystem: number;
           },
-          [number, number, number]
+          number[]
         >(
           `SELECT 
+             c.jid_row_id as jidRowId,
              count(m._id) as total,
              min(m.timestamp) as minTs,
              max(m.timestamp) as maxTs,
@@ -1436,15 +1449,16 @@ export async function auditExitableGroups(
              sum(CASE WHEN m.text_data LIKE '%http://%' OR m.text_data LIKE '%https://%' THEN 1 ELSE 0 END) as linkCount,
              sum(CASE WHEN m.timestamp >= ? THEN 1 ELSE 0 END) as recentTotal,
              sum(CASE WHEN m.timestamp >= ? AND (m.message_type = 7 OR ms.message_row_id IS NOT NULL) THEN 1 ELSE 0 END) as recentSystem
-           FROM message m 
-           JOIN chat c ON m.chat_row_id = c._id 
+           FROM chat c
+           JOIN message m ON m.chat_row_id = c._id 
            LEFT JOIN message_system ms ON m._id = ms.message_row_id
-           WHERE c.jid_row_id = ?`,
+           WHERE c.jid_row_id IN (${activePlaceholders})
+           GROUP BY c.jid_row_id`,
         )
-        .get(recentCutoff, recentCutoff, g.jidRowId);
+        .all(recentCutoff, recentCutoff, ...activeJids);
 
-      if (row) {
-        stats = {
+      for (const row of batchStats) {
+        groupStatsMap.set(row.jidRowId, {
           total: row.total ?? 0,
           minTs: row.maxTs ? row.minTs : null,
           maxTs: row.maxTs,
@@ -1453,14 +1467,16 @@ export async function auditExitableGroups(
           linkCount: row.linkCount ?? 0,
           recentTotal: row.recentTotal ?? 0,
           recentSystem: row.recentSystem ?? 0,
-        };
+        });
       }
     } catch {
-      // Fallback query if message_system or message_type columns don't exist
+      // Fallback query without message_system if schema differs
       try {
-        const fallbackRow = db.$client
+        const activePlaceholders = activeJids.map(() => "?").join(",");
+        const fallbackStats = db.$client
           .query<
             {
+              jidRowId: number;
               total: number;
               minTs: number | null;
               maxTs: number | null;
@@ -1468,37 +1484,52 @@ export async function auditExitableGroups(
               linkCount: number;
               recentTotal: number;
             },
-            [number, number]
+            number[]
           >(
             `SELECT 
+               c.jid_row_id as jidRowId,
                count(m._id) as total,
                min(m.timestamp) as minTs,
                max(m.timestamp) as maxTs,
                sum(CASE WHEN m.text_data IS NOT NULL AND length(trim(m.text_data)) > 0 THEN 1 ELSE 0 END) as textCount,
                sum(CASE WHEN m.text_data LIKE '%http://%' OR m.text_data LIKE '%https://%' THEN 1 ELSE 0 END) as linkCount,
                sum(CASE WHEN m.timestamp >= ? THEN 1 ELSE 0 END) as recentTotal
-             FROM message m 
-             JOIN chat c ON m.chat_row_id = c._id 
-             WHERE c.jid_row_id = ?`,
+             FROM chat c
+             JOIN message m ON m.chat_row_id = c._id 
+             WHERE c.jid_row_id IN (${activePlaceholders})
+             GROUP BY c.jid_row_id`,
           )
-          .get(recentCutoff, g.jidRowId);
+          .all(recentCutoff, ...activeJids);
 
-        if (fallbackRow) {
-          stats = {
-            total: fallbackRow.total ?? 0,
-            minTs: fallbackRow.maxTs ? fallbackRow.minTs : null,
-            maxTs: fallbackRow.maxTs,
+        for (const row of fallbackStats) {
+          groupStatsMap.set(row.jidRowId, {
+            total: row.total ?? 0,
+            minTs: row.maxTs ? row.minTs : null,
+            maxTs: row.maxTs,
             systemCount: 0,
-            textCount: fallbackRow.textCount ?? 0,
-            linkCount: fallbackRow.linkCount ?? 0,
-            recentTotal: fallbackRow.recentTotal ?? 0,
+            textCount: row.textCount ?? 0,
+            linkCount: row.linkCount ?? 0,
+            recentTotal: row.recentTotal ?? 0,
             recentSystem: 0,
-          };
+          });
         }
       } catch {
-        // Fallback
+        // Leave map empty, will default to 0 stats
       }
     }
+  }
+
+  for (const g of activeGroups) {
+    const stats: GroupMsgStats = groupStatsMap.get(g.jidRowId) ?? {
+      total: 0,
+      minTs: null,
+      maxTs: null,
+      systemCount: 0,
+      textCount: 0,
+      linkCount: 0,
+      recentTotal: 0,
+      recentSystem: 0,
+    };
 
     const adminCount = groupAdminCountMap.get(g.jidRowId) ?? 0;
     const daysSinceLastMessage = stats.maxTs

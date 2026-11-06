@@ -169,6 +169,7 @@ export function getWapeDb(): Database {
   const db = new Database(dbPath, { create: true });
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA foreign_keys = ON;");
 
   initWapeDbSchema(db);
@@ -269,7 +270,9 @@ function initWapeDbSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone);
     CREATE INDEX IF NOT EXISTS idx_groups_jid ON groups(jid);
     CREATE INDEX IF NOT EXISTS idx_room_groups_room ON room_groups(room_id);
+    CREATE INDEX IF NOT EXISTS idx_room_groups_group ON room_groups(group_id);
     CREATE INDEX IF NOT EXISTS idx_cgs_group ON contact_group_sources(group_id);
+    CREATE INDEX IF NOT EXISTS idx_lc_contact ON list_contacts(contact_id);
   `);
 
   // Ensure default global lists exist
@@ -676,21 +679,36 @@ export function saveContactsToList(
   const now = Date.now();
 
   db.transaction(() => {
-    const insertContactStmt = db.prepare(
-      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_save_contacts (phone TEXT PRIMARY KEY)",
     );
-    const insertListContactStmt = db.prepare(
-      `INSERT OR IGNORE INTO list_contacts (list_id, contact_id) SELECT ?, id FROM contacts WHERE phone = ?`,
-    );
+    db.run("DELETE FROM temp_save_contacts");
 
-    db.run(`DELETE FROM list_contacts WHERE list_id = ?`, [list.id]);
+    const insTemp = db.prepare(
+      "INSERT OR IGNORE INTO temp_save_contacts (phone) VALUES (?)",
+    );
     for (const phone of contacts) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        insertContactStmt.run(normalized, now);
-        insertListContactStmt.run(list.id, normalized);
+        insTemp.run(normalized);
       }
     }
+
+    db.run(
+      "INSERT OR IGNORE INTO contacts (phone, created_at) SELECT phone, ? FROM temp_save_contacts",
+      [now],
+    );
+
+    db.run(`DELETE FROM list_contacts WHERE list_id = ?`, [list.id]);
+
+    db.run(
+      `INSERT OR IGNORE INTO list_contacts (list_id, contact_id)
+       SELECT ?, c.id
+       FROM temp_save_contacts tsc
+       JOIN contacts c ON tsc.phone = c.phone`,
+      [list.id],
+    );
+
     db.run(`UPDATE lists SET updated_at = ? WHERE id = ?`, [now, list.id]);
   })();
 }
@@ -705,23 +723,43 @@ export function addContactsToList(
   let addedCount = 0;
 
   db.transaction(() => {
-    const insertContactStmt = db.prepare(
-      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_add_contacts (phone TEXT PRIMARY KEY)",
     );
-    const insertListContactStmt = db.prepare(
-      `INSERT OR IGNORE INTO list_contacts (list_id, contact_id) SELECT ?, id FROM contacts WHERE phone = ?`,
-    );
+    db.run("DELETE FROM temp_add_contacts");
 
+    const insTemp = db.prepare(
+      "INSERT OR IGNORE INTO temp_add_contacts (phone) VALUES (?)",
+    );
     for (const phone of newContacts) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        insertContactStmt.run(normalized, now);
-        const res = insertListContactStmt.run(list.id, normalized);
-        if (res.changes > 0) {
-          addedCount++;
-        }
+        insTemp.run(normalized);
       }
     }
+
+    db.run(
+      "INSERT OR IGNORE INTO contacts (phone, created_at) SELECT phone, ? FROM temp_add_contacts",
+      [now],
+    );
+
+    const beforeRow = db
+      .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+      .get(list.id) as { cnt: number };
+
+    db.run(
+      `INSERT OR IGNORE INTO list_contacts (list_id, contact_id)
+       SELECT ?, c.id
+       FROM temp_add_contacts tac
+       JOIN contacts c ON tac.phone = c.phone`,
+      [list.id],
+    );
+
+    const afterRow = db
+      .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+      .get(list.id) as { cnt: number };
+
+    addedCount = Math.max(0, afterRow.cnt - beforeRow.cnt);
     db.run(`UPDATE lists SET updated_at = ? WHERE id = ?`, [now, list.id]);
   })();
 
@@ -758,18 +796,40 @@ export function removeContactsFromList(
   const now = Date.now();
 
   db.transaction(() => {
-    const deleteStmt = db.prepare(
-      `DELETE FROM list_contacts WHERE list_id = ? AND contact_id = (SELECT id FROM contacts WHERE phone = ?)`,
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_rem_contacts (phone TEXT PRIMARY KEY)",
+    );
+    db.run("DELETE FROM temp_rem_contacts");
+
+    const insTemp = db.prepare(
+      "INSERT OR IGNORE INTO temp_rem_contacts (phone) VALUES (?)",
     );
     for (const phone of contactsToRemove) {
       const normalized = normalizeNigerianPhoneNumber(phone);
       if (normalized) {
-        const res = deleteStmt.run(listRow.id, normalized);
-        if (res.changes > 0) {
-          removedCount++;
-        }
+        insTemp.run(normalized);
       }
     }
+
+    const beforeRow = db
+      .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+      .get(listRow.id) as { cnt: number };
+
+    db.run(
+      `DELETE FROM list_contacts
+       WHERE list_id = ?
+         AND contact_id IN (
+           SELECT c.id FROM contacts c
+           JOIN temp_rem_contacts trc ON c.phone = trc.phone
+         )`,
+      [listRow.id],
+    );
+
+    const afterRow = db
+      .query(`SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?`)
+      .get(listRow.id) as { cnt: number };
+
+    removedCount = Math.max(0, beforeRow.cnt - afterRow.cnt);
     db.run(`UPDATE lists SET updated_at = ? WHERE id = ?`, [now, listRow.id]);
   })();
 
@@ -815,15 +875,6 @@ export function recordScanProvenance(options: {
     const insertGroupStmt = db.prepare(
       `INSERT INTO groups (source_id, jid, subject, community_name) VALUES (?, ?, ?, ?) ON CONFLICT(source_id, jid) DO UPDATE SET subject = excluded.subject, community_name = excluded.community_name`,
     );
-    const getGroupStmt = db.prepare(
-      `SELECT id FROM groups WHERE source_id = ? AND jid = ?`,
-    );
-    const insertContactStmt = db.prepare(
-      `INSERT OR IGNORE INTO contacts (phone, created_at) VALUES (?, ?)`,
-    );
-    const insertContactGroupStmt = db.prepare(
-      `INSERT OR IGNORE INTO contact_group_sources (contact_id, group_id) SELECT id, ? FROM contacts WHERE phone = ?`,
-    );
 
     const existingSource = db
       .query(`SELECT id FROM sources WHERE type = ? AND label = ?`)
@@ -845,6 +896,15 @@ export function recordScanProvenance(options: {
       sourceId = sourceRow.id;
     }
 
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_prov_phones (jid TEXT, phone TEXT)",
+    );
+    db.run("DELETE FROM temp_prov_phones");
+
+    const insProvTemp = db.prepare(
+      "INSERT INTO temp_prov_phones (jid, phone) VALUES (?, ?)",
+    );
+
     for (const group of options.groups) {
       insertGroupStmt.run(
         sourceId,
@@ -852,19 +912,189 @@ export function recordScanProvenance(options: {
         group.subject,
         group.communityName ?? null,
       );
-      const groupRow = getGroupStmt.get(sourceId, group.jid) as { id: number };
 
       for (const rawPhone of group.phones) {
         const normalized = normalizeNigerianPhoneNumber(rawPhone);
         if (normalized) {
-          insertContactStmt.run(normalized, now);
-          insertContactGroupStmt.run(groupRow.id, normalized);
+          insProvTemp.run(group.jid, normalized);
         }
       }
     }
+
+    db.run(
+      "INSERT OR IGNORE INTO contacts (phone, created_at) SELECT DISTINCT phone, ? FROM temp_prov_phones",
+      [now],
+    );
+
+    db.run(
+      `INSERT OR IGNORE INTO contact_group_sources (contact_id, group_id)
+       SELECT c.id, g.id
+       FROM temp_prov_phones tpp
+       JOIN groups g ON tpp.jid = g.jid AND g.source_id = ?
+       JOIN contacts c ON tpp.phone = c.phone`,
+      [sourceId],
+    );
   })();
 
   return { sourceId };
+}
+
+export interface BatchRoomScanItem {
+  roomId: string;
+  targetListName: string;
+  activeJidRowIds: number[];
+}
+
+export interface BatchRoomScanProvenanceItem {
+  jidRowId: number;
+  jid: string;
+  subject: string;
+  communityName: string | null;
+  phones: string[];
+}
+
+export interface BatchRoomScanResult {
+  addedCount: number;
+  totalCount: number;
+}
+
+export function syncRoomsBatchToStore(options: {
+  scanType: "primary" | "oneoff";
+  sourceLabel: string;
+  ownerPhone?: string | null;
+  rooms: BatchRoomScanItem[];
+  provenanceGroups: BatchRoomScanProvenanceItem[];
+}): Map<string, BatchRoomScanResult> {
+  const db = getWapeDb();
+  const now = Date.now();
+  const results = new Map<string, BatchRoomScanResult>();
+
+  db.transaction(() => {
+    // 1. Set up temporary tables
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_gp (jid_row_id INTEGER, phone TEXT)",
+    );
+    db.run("DELETE FROM temp_gp");
+
+    const insTemp = db.prepare(
+      "INSERT INTO temp_gp (jid_row_id, phone) VALUES (?, ?)",
+    );
+
+    for (const g of options.provenanceGroups) {
+      for (const rawPhone of g.phones) {
+        const normalized = normalizeNigerianPhoneNumber(rawPhone);
+        if (normalized) {
+          insTemp.run(g.jidRowId, normalized);
+        }
+      }
+    }
+
+    // 2. Insert all newly discovered Nigerian contacts in one operation
+    db.run(
+      "INSERT OR IGNORE INTO contacts (phone, created_at) SELECT DISTINCT phone, ? FROM temp_gp",
+      [now],
+    );
+
+    // 3. Resolve or insert source
+    let sourceId: number;
+    const existingSource = db
+      .query("SELECT id FROM sources WHERE type = ? AND label = ?")
+      .get(options.scanType, options.sourceLabel) as { id: number } | null;
+
+    if (existingSource) {
+      sourceId = existingSource.id;
+      db.run(
+        "UPDATE sources SET scanned_at = ?, owner_phone = COALESCE(?, owner_phone) WHERE id = ?",
+        [now, options.ownerPhone ?? null, sourceId],
+      );
+    } else {
+      db.run(
+        "INSERT INTO sources (type, label, owner_phone, scanned_at) VALUES (?, ?, ?, ?)",
+        [
+          options.scanType,
+          options.sourceLabel,
+          options.ownerPhone ?? null,
+          now,
+        ],
+      );
+      sourceId = (
+        db.query("SELECT last_insert_rowid() as id").get() as { id: number }
+      ).id;
+    }
+
+    // 4. Map WhatsApp JID row IDs to SQLite group IDs
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_jm (jid_row_id INTEGER PRIMARY KEY, group_id INTEGER)",
+    );
+    db.run("DELETE FROM temp_jm");
+
+    const insertGroupStmt = db.prepare(
+      "INSERT INTO groups (source_id, jid, subject, community_name) VALUES (?, ?, ?, ?) ON CONFLICT(source_id, jid) DO UPDATE SET subject = excluded.subject, community_name = excluded.community_name",
+    );
+    const getGroupStmt = db.prepare(
+      "SELECT id FROM groups WHERE source_id = ? AND jid = ?",
+    );
+    const insJidMap = db.prepare(
+      "INSERT INTO temp_jm (jid_row_id, group_id) VALUES (?, ?)",
+    );
+
+    for (const g of options.provenanceGroups) {
+      insertGroupStmt.run(sourceId, g.jid, g.subject, g.communityName ?? null);
+      const gRow = getGroupStmt.get(sourceId, g.jid) as { id: number };
+      insJidMap.run(g.jidRowId, gRow.id);
+    }
+
+    // 5. Connect contacts to group provenance in one operation
+    db.run(`
+      INSERT OR IGNORE INTO contact_group_sources (contact_id, group_id)
+      SELECT c.id, jm.group_id
+      FROM temp_gp tgp
+      JOIN temp_jm jm ON tgp.jid_row_id = jm.jid_row_id
+      JOIN contacts c ON tgp.phone = c.phone
+    `);
+
+    // 6. Connect room active group contacts to lists
+    db.run(
+      "CREATE TEMP TABLE IF NOT EXISTS temp_rj (jid_row_id INTEGER PRIMARY KEY)",
+    );
+    const insRoomJid = db.prepare(
+      "INSERT INTO temp_rj (jid_row_id) VALUES (?)",
+    );
+
+    for (const roomItem of options.rooms) {
+      const list = getOrCreateList(roomItem.targetListName);
+      const beforeRow = db
+        .query("SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?")
+        .get(list.id) as { cnt: number };
+
+      db.run("DELETE FROM temp_rj");
+      for (const jid of roomItem.activeJidRowIds) {
+        insRoomJid.run(jid);
+      }
+
+      db.run(
+        `INSERT OR IGNORE INTO list_contacts (list_id, contact_id)
+         SELECT DISTINCT ?, c.id
+         FROM temp_gp tgp
+         JOIN temp_rj rj ON tgp.jid_row_id = rj.jid_row_id
+         JOIN contacts c ON tgp.phone = c.phone`,
+        [list.id],
+      );
+
+      db.run("UPDATE lists SET updated_at = ? WHERE id = ?", [now, list.id]);
+
+      const afterRow = db
+        .query("SELECT COUNT(*) as cnt FROM list_contacts WHERE list_id = ?")
+        .get(list.id) as { cnt: number };
+
+      results.set(roomItem.roomId, {
+        addedCount: Math.max(0, afterRow.cnt - beforeRow.cnt),
+        totalCount: afterRow.cnt,
+      });
+    }
+  })();
+
+  return results;
 }
 
 export interface OneoffSearchResultItem {
@@ -892,10 +1122,14 @@ export function searchOneoffGroups(
       GROUP_CONCAT(DISTINCT s.label) as rawLabels,
       s.owner_phone as ownerPhone,
       MAX(s.scanned_at) as scannedAt,
-      COUNT(DISTINCT cgs.contact_id) as memberCount
+      (SELECT COUNT(DISTINCT cgs.contact_id)
+       FROM contact_group_sources cgs
+       JOIN groups g2 ON g2.id = cgs.group_id
+       JOIN sources s2 ON s2.id = g2.source_id
+       WHERE g2.jid = g.jid AND s2.type = 'oneoff'
+      ) as memberCount
     FROM groups g
     JOIN sources s ON s.id = g.source_id
-    LEFT JOIN contact_group_sources cgs ON cgs.group_id = g.id
     WHERE s.type = 'oneoff'
   `;
 
@@ -1056,16 +1290,39 @@ export function getContactProvenance(phone: string): ContactProvenance | null {
 
   const uniqueGroups = Array.from(groupsMap.values());
 
-  // Match rooms for each group
+  // Match rooms for each group with in-memory set index
   const allRooms = getRooms();
+  const roomIndex = new Map<
+    string,
+    { id: string; name: string | null | undefined; lookup: Set<string> }
+  >();
+  for (const r of allRooms) {
+    const lookup = new Set<string>();
+    for (const rawId of r.groupIds ?? r.groupJidRowIds ?? []) {
+      const s = String(rawId).toLowerCase();
+      lookup.add(s);
+      if (!s.includes("@")) {
+        lookup.add(`${s}@g.us`);
+        lookup.add(`${s}@s.whatsapp.net`);
+      }
+    }
+    for (const name of r.groupNames ?? []) {
+      lookup.add(name.trim().toLowerCase());
+    }
+    roomIndex.set(r.id, { id: r.id, name: r.name, lookup });
+  }
+
   for (const group of uniqueGroups) {
-    const matched = allRooms
-      .filter((room) => isGroupInRoom(group, room, allRooms))
-      .map((room) =>
-        room.name && room.name !== room.id
-          ? `${room.id} (${room.name})`
-          : room.id,
-      );
+    const groupJid = group.jid.toLowerCase();
+    const groupSub = group.subject.trim().toLowerCase();
+    const matched: string[] = [];
+
+    for (const r of allRooms) {
+      const entry = roomIndex.get(r.id);
+      if (entry && (entry.lookup.has(groupJid) || entry.lookup.has(groupSub))) {
+        matched.push(r.name && r.name !== r.id ? `${r.id} (${r.name})` : r.id);
+      }
+    }
     group.rooms = matched;
   }
 
