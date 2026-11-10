@@ -897,6 +897,162 @@ export function normalizeWhatsAppGroupLink(raw: string): string | null {
   return `https://chat.whatsapp.com/${match[1]}`;
 }
 
+export interface ExtractedLinkSource {
+  chatRowId: number;
+  jid: string | null;
+  subject: string | null;
+  isGroup: boolean;
+}
+
+/**
+ * Extracts all unique WhatsApp group invite links from all messages in the database
+ * along with their originating chat sources (group or direct message),
+ * optionally filtered by date/time and limited to the last N newest links.
+ */
+export async function extractWhatsAppGroupLinksWithSources(
+  db: AppDatabase,
+  filterOpts?: ExportFilterOptions,
+): Promise<{ link: string; sources: ExtractedLinkSource[] }[]> {
+  let sql = `
+    SELECT 
+      m.text_data as textData,
+      m.chat_row_id as chatRowId,
+      c.subject as subject,
+      COALESCE(j.raw_string, (j.user || '@' || j.server)) as jid,
+      j.server as server,
+      c.group_type as groupType
+    FROM message m
+    LEFT JOIN chat c ON m.chat_row_id = c._id
+    LEFT JOIN jid j ON c.jid_row_id = j._id
+    WHERE m.text_data LIKE '%chat.whatsapp.com%'
+  `;
+  const params: (number | string)[] = [];
+
+  if (filterOpts) {
+    const { startTime, endTime } = parseDateRange(filterOpts);
+    if (startTime !== undefined) {
+      sql += ` AND m.timestamp >= ?`;
+      params.push(startTime);
+    }
+    if (endTime !== undefined) {
+      sql += ` AND m.timestamp <= ?`;
+      params.push(endTime);
+    }
+  }
+
+  sql += ` ORDER BY m.timestamp DESC, m._id DESC`;
+
+  type LinkMessageRow = {
+    textData: string | null;
+    chatRowId: number;
+    subject: string | null;
+    jid: string | null;
+    server: string | null;
+    groupType: number | null;
+  };
+
+  let messageRows: LinkMessageRow[];
+  try {
+    messageRows = db.$client.query(sql).all(...params) as LinkMessageRow[];
+  } catch {
+    // Fallback if joined tables or specific columns fail in non-standard/legacy schemas
+    try {
+      const fallbackSql = `
+        SELECT 
+          m.text_data as textData,
+          m.chat_row_id as chatRowId,
+          c.subject as subject,
+          NULL as jid,
+          NULL as server,
+          c.group_type as groupType
+        FROM message m
+        LEFT JOIN chat c ON m.chat_row_id = c._id
+        WHERE m.text_data LIKE '%chat.whatsapp.com%'
+        ORDER BY m.timestamp DESC, m._id DESC
+      `;
+      messageRows = db.$client.query(fallbackSql).all() as LinkMessageRow[];
+    } catch {
+      const basicSql = `
+        SELECT 
+          text_data as textData,
+          chat_row_id as chatRowId,
+          NULL as subject,
+          NULL as jid,
+          NULL as server,
+          NULL as groupType
+        FROM message
+        WHERE text_data LIKE '%chat.whatsapp.com%'
+        ORDER BY timestamp DESC, _id DESC
+      `;
+      messageRows = db.$client.query(basicSql).all() as LinkMessageRow[];
+    }
+  }
+
+  const linkMap = new Map<string, ExtractedLinkSource[]>();
+  const linkRegex = /(?:https?:\/\/)?chat\.whatsapp\.com\/([a-zA-Z0-9_-]+)/gi;
+
+  const lastLimit = filterOpts?.last
+    ? typeof filterOpts.last === "string"
+      ? parseInt(filterOpts.last, 10)
+      : filterOpts.last
+    : undefined;
+
+  for (const row of messageRows) {
+    if (!row.textData) continue;
+    let match: RegExpExecArray | null;
+    while ((match = linkRegex.exec(row.textData)) !== null) {
+      if (match[1]) {
+        const link = `https://chat.whatsapp.com/${match[1]}`;
+        const isGroup = Boolean(
+          (row.jid && (row.jid.endsWith("@g.us") || row.server === "g.us")) ||
+          row.groupType === 1 ||
+          (row.subject && row.subject.trim().length > 0),
+        );
+        const sourceInfo: ExtractedLinkSource = {
+          chatRowId: row.chatRowId,
+          jid: row.jid ?? null,
+          subject: row.subject ?? null,
+          isGroup,
+        };
+
+        const existingSources = linkMap.get(link);
+        if (!existingSources) {
+          linkMap.set(link, [sourceInfo]);
+        } else {
+          const alreadyPresent = existingSources.some(
+            (s) =>
+              (s.jid && sourceInfo.jid && s.jid === sourceInfo.jid) ||
+              s.chatRowId === sourceInfo.chatRowId,
+          );
+          if (!alreadyPresent) {
+            existingSources.push(sourceInfo);
+          }
+        }
+
+        if (
+          lastLimit !== undefined &&
+          lastLimit > 0 &&
+          linkMap.size >= lastLimit
+        ) {
+          break;
+        }
+      }
+    }
+    if (lastLimit !== undefined && lastLimit > 0 && linkMap.size >= lastLimit) {
+      break;
+    }
+  }
+
+  const sortedLinks = Array.from(linkMap.keys()).sort((a, b) =>
+    a.localeCompare(b),
+  );
+
+  return sortedLinks.map((link) => ({
+    link,
+    sources: linkMap.get(link) ?? [],
+  }));
+}
+
 /**
  * Extracts all unique WhatsApp group invite links from all messages in the database,
  * optionally filtered by date/time and limited to the last N newest links,

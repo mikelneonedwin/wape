@@ -41,6 +41,7 @@ import {
   getNotedComparison,
   getWapeDir,
   saveNotedComparison,
+  type Room,
 } from "../src/services/wape-store";
 
 describe("Nigerian Phone Parser & Formatter", () => {
@@ -693,6 +694,122 @@ describe("WhatsApp Group Link Extractor", () => {
       "https://chat.whatsapp.com/LinkThree789",
       "https://chat.whatsapp.com/LinkTwo456",
     ]);
+
+    sqlite.close();
+  });
+
+  it("extracts whatsapp group links with source provenance distinguishing rooms, direct chats, and unassigned groups", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { drizzle } = await import("drizzle-orm/bun-sqlite");
+    const schema = await import("../src/db/schema");
+    const { extractWhatsAppGroupLinksWithSources } =
+      await import("../src/services/extractor");
+    const { formatExtractedLinkWithSource } =
+      await import("../src/cli/room-manager");
+
+    const sqlite = new Database(":memory:");
+    sqlite.run(`
+      CREATE TABLE jid (_id INTEGER PRIMARY KEY, user TEXT, server TEXT, raw_string TEXT);
+      CREATE TABLE chat (_id INTEGER PRIMARY KEY, jid_row_id INTEGER, subject TEXT, group_type INTEGER);
+      CREATE TABLE message (_id INTEGER PRIMARY KEY, chat_row_id INTEGER, text_data TEXT, timestamp INTEGER);
+    `);
+
+    // JIDs:
+    // 1: Room group Alpha (g.us)
+    // 2: Group Beta in multiple rooms (g.us)
+    // 3: Unassigned standalone group (g.us)
+    // 4: Direct Chat / DM (s.whatsapp.net)
+    sqlite.run(`
+      INSERT INTO jid (_id, user, server, raw_string) VALUES
+        (1, 'group1', 'g.us', 'group1@g.us'),
+        (2, 'group2', 'g.us', 'group2@g.us'),
+        (3, 'group3', 'g.us', 'group3@g.us'),
+        (4, '2348011112222', 's.whatsapp.net', '2348011112222@s.whatsapp.net');
+    `);
+
+    sqlite.run(`
+      INSERT INTO chat (_id, jid_row_id, subject, group_type) VALUES
+        (10, 1, 'Group Alpha', 1),
+        (20, 2, 'Group Beta', 1),
+        (30, 3, 'Group Gamma', 1),
+        (40, 4, NULL, NULL);
+    `);
+
+    sqlite.run(`
+      INSERT INTO message (chat_row_id, text_data, timestamp) VALUES
+        (10, 'Link in Alpha: https://chat.whatsapp.com/AlphaLink111', 1000),
+        (20, 'Link in Beta: https://chat.whatsapp.com/BetaLink222', 2000),
+        (30, 'Link in Gamma: https://chat.whatsapp.com/GammaLink333', 3000),
+        (40, 'Link in DM: https://chat.whatsapp.com/DirectLink444', 4000);
+    `);
+
+    const db = drizzle(sqlite, { schema }) as unknown as AppDatabase;
+    const results = await extractWhatsAppGroupLinksWithSources(db);
+
+    expect(results.length).toBe(4);
+
+    const testRooms: Room[] = [
+      {
+        id: "room_one",
+        name: "Room One",
+        groupIds: ["group1@g.us", "group2@g.us"],
+        groupNames: ["Group Alpha", "Group Beta"],
+        targetList: "room_one.txt",
+        groupJidRowIds: [],
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      {
+        id: "room_two",
+        name: "Room Two",
+        groupIds: ["group2@g.us"],
+        groupNames: ["Group Beta"],
+        targetList: "room_two.txt",
+        groupJidRowIds: [],
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ];
+
+    const alphaItem = results.find((r) => r.link.includes("AlphaLink111"))!;
+    const betaItem = results.find((r) => r.link.includes("BetaLink222"))!;
+    const gammaItem = results.find((r) => r.link.includes("GammaLink333"))!;
+    const dmItem = results.find((r) => r.link.includes("DirectLink444"))!;
+
+    expect(alphaItem.sources[0]?.isGroup).toBe(true);
+    expect(dmItem.sources[0]?.isGroup).toBe(false);
+
+    const alphaFormatted = formatExtractedLinkWithSource(
+      alphaItem.link,
+      alphaItem.sources,
+      testRooms,
+    );
+    const betaFormatted = formatExtractedLinkWithSource(
+      betaItem.link,
+      betaItem.sources,
+      testRooms,
+    );
+    const gammaFormatted = formatExtractedLinkWithSource(
+      gammaItem.link,
+      gammaItem.sources,
+      testRooms,
+    );
+    const dmFormatted = formatExtractedLinkWithSource(
+      dmItem.link,
+      dmItem.sources,
+      testRooms,
+    );
+
+    // Alpha is in Room One
+    expect(alphaFormatted).toContain("[Room: Room One]");
+    // Beta is in both Room One and Room Two, comma-separated
+    expect(betaFormatted).toContain("[Rooms: Room One, Room Two]");
+    // Gamma is a group not in any room
+    expect(gammaFormatted).toContain("[No Room]");
+    // DM is a direct message
+    expect(dmFormatted).toContain("[Direct Chat • No Room]");
+
+    sqlite.close();
   });
 });
 
@@ -1608,6 +1725,55 @@ describe("Group and Community Extractor", () => {
       showRooms: false,
     });
     expect(suppressedResult).not.toContain("[Room: gunner]");
+  });
+
+  it("prints contact source report correctly", async () => {
+    const { printContactSourceReport } =
+      await import("../src/cli/room-manager");
+
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      printContactSourceReport(
+        {
+          phone: "+2348012345678",
+          totalGroupsCount: 1,
+          groups: [
+            {
+              jid: "120363011111111111@g.us",
+              subject: "Real Estate VIP",
+              communityName: "Real Estate Community",
+              sources: [
+                {
+                  sourceType: "primary",
+                  sourceLabel: "Primary Backup",
+                  ownerPhone: null,
+                  scannedAt: Date.now(),
+                },
+              ],
+            },
+          ],
+          rooms: ["investors"],
+          lists: ["main"],
+          sources: [],
+        },
+        "+2348012345678",
+      );
+
+      const output = logs.join("\n");
+      expect(output).toContain("CONTACT SOURCE REPORT");
+      expect(output).toContain("0801 234 5678");
+      expect(output).toContain("Real Estate VIP");
+      expect(output).toContain("Real Estate Community");
+      expect(output).toContain("investors");
+      expect(output).toContain("main");
+    } finally {
+      console.log = originalLog;
+    }
   });
 
   it("identifies whether a group belongs to a room by JID or group name", async () => {

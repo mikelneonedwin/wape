@@ -14,6 +14,7 @@ import {
   detectWhatsAppOwnerPhone,
   extractNigerianNumbersWithGroupMapping,
   extractWhatsAppGroupLinks,
+  extractWhatsAppGroupLinksWithSources,
   fetchAllGroups,
   getExitedGroupJids,
   resolveRoomGroups,
@@ -48,6 +49,8 @@ import {
   createRoomInteractive,
   formatGroupLabel,
   formatProvenanceGroupItem,
+  formatExtractedLinkWithSource,
+  printContactSourceReport,
   printExitableAudit,
   printGroups,
   printRoomAudit,
@@ -1237,22 +1240,37 @@ oneoffCmd
         const newContacts = diff.newContacts;
 
         // 2. Extract new group invite links from one-off backup database
-        const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+        const extractedLinksWithSources =
+          await extractWhatsAppGroupLinksWithSources(db);
         const recordedLinks = new Set(getSavedLinks());
-        const newLinks = allExtractedLinks.filter(
-          (link) => !recordedLinks.has(link),
+        const newLinksWithSources = extractedLinksWithSources.filter(
+          (item) => !recordedLinks.has(item.link),
         );
+        const newLinks = newLinksWithSources.map((item) => item.link);
 
         const formattedNewContacts = newContacts.map(
           (contact) => `${formatPhoneNumber(contact)}  [NEW]`,
         );
 
-        for (const contactLine of formattedNewContacts) {
-          console.log(contactLine);
+        for (const contact of newContacts) {
+          console.log(
+            `${formatPhoneNumber(contact)}  ${pc.bold(pc.green("[NEW]"))}`,
+          );
+          const provenance = getContactProvenance(contact);
+          if (provenance) {
+            printContactSourceReport(provenance, contact);
+          }
         }
 
-        for (const link of newLinks) {
-          console.log(link);
+        const allRoomsForLinks = getRooms();
+        for (const item of newLinksWithSources) {
+          console.log(
+            formatExtractedLinkWithSource(
+              item.link,
+              item.sources,
+              allRoomsForLinks,
+            ),
+          );
         }
 
         const clipboardItems = [...formattedNewContacts, ...newLinks];
@@ -2352,9 +2370,9 @@ async function executeBundle(
   const db = getDatabase(dbPath);
 
   // Fetch groups and links concurrently from the SQLite database
-  const [groups, allExtractedLinks] = await Promise.all([
+  const [groups, extractedLinksWithSources] = await Promise.all([
     fetchAllGroups(db),
-    extractWhatsAppGroupLinks(db),
+    extractWhatsAppGroupLinksWithSources(db),
   ]);
 
   // 1. General room scan (scan all configured rooms in batch to update their lists)
@@ -2373,18 +2391,27 @@ async function executeBundle(
 
   // 3. Extract new group invite links from backup database
   const recordedLinks = new Set(getSavedLinks());
-  const newLinks = allExtractedLinks.filter((link) => !recordedLinks.has(link));
+  const newLinksWithSources = extractedLinksWithSources.filter(
+    (item) => !recordedLinks.has(item.link),
+  );
+  const newLinks = newLinksWithSources.map((item) => item.link);
 
   const formattedNewContacts = newContacts.map(
     (contact) => `${formatPhoneNumber(contact)}  [NEW]`,
   );
 
-  for (const contactLine of formattedNewContacts) {
-    console.log(contactLine);
+  for (const contact of newContacts) {
+    console.log(`${formatPhoneNumber(contact)}  ${pc.bold(pc.green("[NEW]"))}`);
+    const provenance = getContactProvenance(contact);
+    if (provenance) {
+      printContactSourceReport(provenance, contact);
+    }
   }
 
-  for (const link of newLinks) {
-    console.log(link);
+  for (const item of newLinksWithSources) {
+    console.log(
+      formatExtractedLinkWithSource(item.link, item.sources, allRooms),
+    );
   }
 
   const clipboardItems = [...formattedNewContacts, ...newLinks];
@@ -2482,7 +2509,7 @@ roomCmd
       await executeCompare({
         targets: resolvedTargets,
         title: "Rooms Common Contacts Intersection Analysis",
-        source: options?.source,
+        source: options?.source ?? true,
       });
     } catch (error) {
       console.error(
@@ -3998,12 +4025,7 @@ const sourceCmd = program
       const normalized = entry.normalized;
       const provenance = getContactProvenance(normalized);
 
-      if (
-        !provenance ||
-        (provenance.groups.length === 0 &&
-          provenance.rooms.length === 0 &&
-          provenance.lists.length === 0)
-      ) {
+      if (!provenance) {
         console.log(
           pc.yellow(
             `\nNo provenance records found for contact: ${formatPhoneNumber(normalized)} (${normalized})\n`,
@@ -4012,57 +4034,7 @@ const sourceCmd = program
         continue;
       }
 
-      console.log(pc.cyan("\n" + "=".repeat(66)));
-      console.log(
-        pc.bold(
-          pc.cyan(
-            `📱 CONTACT SOURCE REPORT: ${formatPhoneNumber(normalized)} (${normalized})`,
-          ),
-        ),
-      );
-      console.log("=".repeat(66));
-      console.log(
-        `${pc.bold("Total Groups Identified In:")} ${pc.magenta(provenance.totalGroupsCount.toString())}`,
-      );
-
-      if (provenance.groups.length > 0) {
-        console.log(pc.bold(pc.underline("\nIDENTIFIED GROUPS:")));
-        provenance.groups.forEach((g, gIdx) => {
-          console.log(
-            `  ${pc.bold(`${gIdx + 1}.`)} ${formatProvenanceGroupItem(g)}`,
-          );
-        });
-      }
-
-      console.log(pc.bold(pc.underline("\nROOMS:")));
-      if (provenance.rooms.length > 0) {
-        provenance.rooms.forEach((r) => {
-          console.log(`  • ${pc.green(r)}`);
-          const matchingGroups = provenance.groups.filter((g) =>
-            g.rooms?.includes(r),
-          );
-          if (matchingGroups.length > 0) {
-            matchingGroups.forEach((g) => {
-              const comm = g.communityName
-                ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} `
-                : "";
-              console.log(`    • ${comm}${g.subject}`);
-            });
-          } else {
-            console.log(`    • ${pc.dim("(Present via list only)")}`);
-          }
-        });
-      } else {
-        console.log(pc.dim("  (None)"));
-      }
-
-      if (provenance.lists.length > 0) {
-        console.log(pc.bold(pc.underline("\nPRESENT IN LISTS:")));
-        provenance.lists.forEach((l) => {
-          console.log(`  • ${pc.green(l)}`);
-        });
-      }
-      console.log("\n" + "=".repeat(66) + "\n");
+      printContactSourceReport(provenance, normalized);
     }
   });
 

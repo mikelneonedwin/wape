@@ -12,6 +12,7 @@ import {
   getIgnoredJidSet,
   getRoomById,
   getRooms,
+  isGroupInRoom,
   normalizeListName,
   saveRoom,
   type ContactProvenanceGroup,
@@ -58,6 +59,123 @@ export function formatProvenanceGroupItem(
   }
 
   return `${comm}${group.subject}${extraInfo}${roomInfo}`;
+}
+
+export function formatExtractedLinkWithSource(
+  link: string,
+  sources: import("../services/extractor").ExtractedLinkSource[],
+  allRooms: import("../services/wape-store").Room[],
+): string {
+  if (!sources || sources.length === 0) {
+    return `${link}  ${pc.dim("[No Room]")}`;
+  }
+
+  const matchingRoomNames = new Set<string>();
+  let hasGroup = false;
+
+  for (const source of sources) {
+    if (source.isGroup) {
+      hasGroup = true;
+      const groupItem = {
+        jid: source.jid ?? "",
+        subject: source.subject ?? "",
+      };
+      for (const room of allRooms) {
+        if (isGroupInRoom(groupItem, room, allRooms)) {
+          matchingRoomNames.add(room.name || room.id);
+        }
+      }
+    }
+  }
+
+  if (matchingRoomNames.size > 0) {
+    const sortedRooms = Array.from(matchingRoomNames).sort((a, b) =>
+      a.localeCompare(b),
+    );
+    const roomLabel =
+      sortedRooms.length === 1
+        ? `Room: ${sortedRooms[0]}`
+        : `Rooms: ${sortedRooms.join(", ")}`;
+    return `${link}  ${pc.green(`[${roomLabel}]`)}`;
+  }
+
+  if (hasGroup) {
+    return `${link}  ${pc.dim("[No Room]")}`;
+  }
+
+  return `${link}  ${pc.dim("[Direct Chat • No Room]")}`;
+}
+
+export function printContactSourceReport(
+  provenance: NonNullable<
+    ReturnType<typeof import("../services/wape-store").getContactProvenance>
+  >,
+  normalizedPhone: string,
+): void {
+  if (
+    provenance.groups.length === 0 &&
+    provenance.rooms.length === 0 &&
+    provenance.lists.length === 0
+  ) {
+    console.log(
+      pc.yellow(
+        `\nNo provenance records found for contact: ${formatPhoneNumber(normalizedPhone)} (${normalizedPhone})\n`,
+      ),
+    );
+    return;
+  }
+
+  console.log(pc.cyan("\n" + "=".repeat(66)));
+  console.log(
+    pc.bold(
+      pc.cyan(
+        `📱 CONTACT SOURCE REPORT: ${formatPhoneNumber(normalizedPhone)} (${normalizedPhone})`,
+      ),
+    ),
+  );
+  console.log("=".repeat(66));
+  console.log(
+    `${pc.bold("Total Groups Identified In:")} ${pc.magenta(provenance.totalGroupsCount.toString())}`,
+  );
+
+  if (provenance.groups.length > 0) {
+    console.log(pc.bold(pc.underline("\nIDENTIFIED GROUPS:")));
+    provenance.groups.forEach((g, gIdx) => {
+      console.log(
+        `  ${pc.bold(`${gIdx + 1}.`)} ${formatProvenanceGroupItem(g)}`,
+      );
+    });
+  }
+
+  console.log(pc.bold(pc.underline("\nROOMS:")));
+  if (provenance.rooms.length > 0) {
+    provenance.rooms.forEach((r) => {
+      console.log(`  • ${pc.green(r)}`);
+      const matchingGroups = provenance.groups.filter((g) =>
+        g.rooms?.includes(r),
+      );
+      if (matchingGroups.length > 0) {
+        matchingGroups.forEach((g) => {
+          const comm = g.communityName
+            ? `${pc.cyan(`[🏛️ ${g.communityName}]`)} `
+            : "";
+          console.log(`    • ${comm}${g.subject}`);
+        });
+      } else {
+        console.log(`    • ${pc.dim("(Present via list only)")}`);
+      }
+    });
+  } else {
+    console.log(pc.dim("  (None)"));
+  }
+
+  if (provenance.lists.length > 0) {
+    console.log(pc.bold(pc.underline("\nPRESENT IN LISTS:")));
+    provenance.lists.forEach((l) => {
+      console.log(`  • ${pc.green(l)}`);
+    });
+  }
+  console.log("\n" + "=".repeat(66) + "\n");
 }
 
 export function formatGroupLabel(group: {
