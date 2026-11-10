@@ -704,7 +704,7 @@ describe("WhatsApp Group Link Extractor", () => {
     const schema = await import("../src/db/schema");
     const { extractWhatsAppGroupLinksWithSources } =
       await import("../src/services/extractor");
-    const { formatExtractedLinkWithSource } =
+    const { formatExtractedLinkGroups, formatExtractedLinkWithSource } =
       await import("../src/cli/room-manager");
 
     const sqlite = new Database(":memory:");
@@ -808,6 +808,39 @@ describe("WhatsApp Group Link Extractor", () => {
     expect(gammaFormatted).toContain("[No Room]");
     // DM is a direct message
     expect(dmFormatted).toContain("[Direct Chat • No Room]");
+
+    // Test section-grouped link formatting
+    const sections = formatExtractedLinkGroups(results, testRooms);
+    expect(sections.length).toBe(3);
+    expect(sections[0]).toBe(
+      `[Room One]\nhttps://chat.whatsapp.com/AlphaLink111`,
+    );
+    expect(sections[1]).toBe(
+      `[others]\nhttps://chat.whatsapp.com/DirectLink444\nhttps://chat.whatsapp.com/GammaLink333`,
+    );
+    expect(sections[2]).toBe(
+      `https://chat.whatsapp.com/BetaLink222 [Room One, Room Two]`,
+    );
+
+    // Verify case-insensitive alphabetical ordering within sections
+    const unsortedItems = [
+      {
+        link: "https://chat.whatsapp.com/zebra",
+        sources: alphaItem.sources,
+      },
+      {
+        link: "https://chat.whatsapp.com/Apple",
+        sources: alphaItem.sources,
+      },
+      {
+        link: "https://chat.whatsapp.com/banana",
+        sources: alphaItem.sources,
+      },
+    ];
+    const roomOneSections = formatExtractedLinkGroups(unsortedItems, testRooms);
+    expect(roomOneSections[0]).toBe(
+      `[Room One]\nhttps://chat.whatsapp.com/Apple\nhttps://chat.whatsapp.com/banana\nhttps://chat.whatsapp.com/zebra`,
+    );
 
     sqlite.close();
   });

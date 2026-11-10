@@ -49,7 +49,7 @@ import {
   createRoomInteractive,
   formatGroupLabel,
   formatProvenanceGroupItem,
-  formatExtractedLinkWithSource,
+  formatExtractedLinkGroups,
   printContactSourceReport,
   printExitableAudit,
   printGroups,
@@ -1263,20 +1263,25 @@ oneoffCmd
         }
 
         const allRoomsForLinks = getRooms();
-        for (const item of newLinksWithSources) {
-          console.log(
-            formatExtractedLinkWithSource(
-              item.link,
-              item.sources,
-              allRoomsForLinks,
-            ),
-          );
+        const formattedLinkSections = formatExtractedLinkGroups(
+          newLinksWithSources,
+          allRoomsForLinks,
+        );
+
+        if (formattedLinkSections.length > 0) {
+          if (newContacts.length > 0) {
+            console.log("");
+          }
+          console.log(formattedLinkSections.join("\n\n"));
         }
 
-        const clipboardItems = [...formattedNewContacts, ...newLinks];
+        const clipboardItems = [
+          ...formattedNewContacts,
+          ...(formattedLinkSections.length > 0 ? formattedLinkSections : []),
+        ];
         let copied = false;
         if (clipboardItems.length > 0) {
-          copied = await copyToClipboard(clipboardItems.join("\n"));
+          copied = await copyToClipboard(clipboardItems.join("\n\n"));
         }
 
         saveNotedComparison(filePaths, diff.currentCommon);
@@ -2408,16 +2413,25 @@ async function executeBundle(
     }
   }
 
-  for (const item of newLinksWithSources) {
-    console.log(
-      formatExtractedLinkWithSource(item.link, item.sources, allRooms),
-    );
+  const formattedLinkSections = formatExtractedLinkGroups(
+    newLinksWithSources,
+    allRooms,
+  );
+
+  if (formattedLinkSections.length > 0) {
+    if (newContacts.length > 0) {
+      console.log("");
+    }
+    console.log(formattedLinkSections.join("\n\n"));
   }
 
-  const clipboardItems = [...formattedNewContacts, ...newLinks];
+  const clipboardItems = [
+    ...formattedNewContacts,
+    ...(formattedLinkSections.length > 0 ? formattedLinkSections : []),
+  ];
   let copied = false;
   if (clipboardItems.length > 0) {
-    copied = await copyToClipboard(clipboardItems.join("\n"));
+    copied = await copyToClipboard(clipboardItems.join("\n\n"));
   }
 
   saveNotedComparison(filePaths, diff.currentCommon);
@@ -3145,9 +3159,10 @@ program
 async function handleExtractLinks(options?: { backup?: string; key?: string }) {
   try {
     const { db } = await loadDbAndGroups(options?.backup, options?.key);
-    const allExtractedLinks = await extractWhatsAppGroupLinks(db);
+    const extractedLinksWithSources =
+      await extractWhatsAppGroupLinksWithSources(db);
 
-    if (allExtractedLinks.length === 0) {
+    if (extractedLinksWithSources.length === 0) {
       console.log(
         pc.yellow("\nNo WhatsApp group invite links found in backup.\n"),
       );
@@ -3155,14 +3170,15 @@ async function handleExtractLinks(options?: { backup?: string; key?: string }) {
     }
 
     const recordedLinks = new Set(getSavedLinks());
-    const newLinks = allExtractedLinks.filter(
-      (link) => !recordedLinks.has(link),
+    const newLinksWithSources = extractedLinksWithSources.filter(
+      (item) => !recordedLinks.has(item.link),
     );
+    const newLinks = newLinksWithSources.map((item) => item.link);
 
     if (newLinks.length === 0) {
       console.log(
         pc.green(
-          `\nAll ${allExtractedLinks.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
+          `\nAll ${extractedLinksWithSources.length} WhatsApp group invite links found in backup are already recorded in ${getSavedLinksFile()}.\n`,
         ),
       );
       return;
@@ -3170,12 +3186,16 @@ async function handleExtractLinks(options?: { backup?: string; key?: string }) {
 
     saveLinks(newLinks);
 
-    const clipboardText = newLinks.join("\n");
-    const copied = await copyToClipboard(clipboardText);
+    const allRooms = getRooms();
+    const formattedLinkSections = formatExtractedLinkGroups(
+      newLinksWithSources,
+      allRooms,
+    );
 
-    for (const link of newLinks) {
-      console.log(link);
-    }
+    const outputText = formattedLinkSections.join("\n\n");
+    const copied = await copyToClipboard(outputText);
+
+    console.log(outputText);
 
     if (copied) {
       console.log(

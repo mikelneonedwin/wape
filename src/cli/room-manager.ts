@@ -61,21 +61,18 @@ export function formatProvenanceGroupItem(
   return `${comm}${group.subject}${extraInfo}${roomInfo}`;
 }
 
-export function formatExtractedLinkWithSource(
-  link: string,
+export function getLinkMatchingRoomNames(
   sources: import("../services/extractor").ExtractedLinkSource[],
   allRooms: import("../services/wape-store").Room[],
-): string {
+): string[] {
   if (!sources || sources.length === 0) {
-    return `${link}  ${pc.dim("[No Room]")}`;
+    return [];
   }
 
   const matchingRoomNames = new Set<string>();
-  let hasGroup = false;
 
   for (const source of sources) {
     if (source.isGroup) {
-      hasGroup = true;
       const groupItem = {
         jid: source.jid ?? "",
         subject: source.subject ?? "",
@@ -88,14 +85,87 @@ export function formatExtractedLinkWithSource(
     }
   }
 
-  if (matchingRoomNames.size > 0) {
-    const sortedRooms = Array.from(matchingRoomNames).sort((a, b) =>
-      a.localeCompare(b),
+  return Array.from(matchingRoomNames).sort((a, b) => a.localeCompare(b));
+}
+
+export function formatExtractedLinkGroups(
+  items: {
+    link: string;
+    sources: import("../services/extractor").ExtractedLinkSource[];
+  }[],
+  allRooms: import("../services/wape-store").Room[],
+): string[] {
+  const singleRoomMap = new Map<string, string[]>();
+  const others: string[] = [];
+  const multiRoomItems: { link: string; rooms: string[] }[] = [];
+
+  for (const item of items) {
+    const rooms = getLinkMatchingRoomNames(item.sources, allRooms);
+    if (rooms.length === 0) {
+      others.push(item.link);
+    } else if (rooms.length === 1) {
+      const roomName = rooms[0]!;
+      let list = singleRoomMap.get(roomName);
+      if (!list) {
+        list = [];
+        singleRoomMap.set(roomName, list);
+      }
+      list.push(item.link);
+    } else {
+      multiRoomItems.push({ link: item.link, rooms });
+    }
+  }
+
+  const caseInsensitiveCompare = (a: string, b: string) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" });
+
+  const sections: string[] = [];
+
+  const sortedRoomNames = Array.from(singleRoomMap.keys()).sort(
+    caseInsensitiveCompare,
+  );
+
+  for (const roomName of sortedRoomNames) {
+    const links = singleRoomMap.get(roomName);
+    if (links && links.length > 0) {
+      const sortedLinks = [...links].sort(caseInsensitiveCompare);
+      sections.push([`[${roomName}]`, ...sortedLinks].join("\n"));
+    }
+  }
+
+  if (others.length > 0) {
+    const sortedOthers = [...others].sort(caseInsensitiveCompare);
+    sections.push(["[others]", ...sortedOthers].join("\n"));
+  }
+
+  if (multiRoomItems.length > 0) {
+    const sortedMulti = [...multiRoomItems].sort((a, b) =>
+      caseInsensitiveCompare(a.link, b.link),
     );
+    const lines = sortedMulti.map((m) => `${m.link} [${m.rooms.join(", ")}]`);
+    sections.push(lines.join("\n"));
+  }
+
+  return sections;
+}
+
+export function formatExtractedLinkWithSource(
+  link: string,
+  sources: import("../services/extractor").ExtractedLinkSource[],
+  allRooms: import("../services/wape-store").Room[],
+): string {
+  if (!sources || sources.length === 0) {
+    return `${link}  ${pc.dim("[No Room]")}`;
+  }
+
+  const matchingRoomNames = getLinkMatchingRoomNames(sources, allRooms);
+  const hasGroup = sources.some((s) => s.isGroup);
+
+  if (matchingRoomNames.length > 0) {
     const roomLabel =
-      sortedRooms.length === 1
-        ? `Room: ${sortedRooms[0]}`
-        : `Rooms: ${sortedRooms.join(", ")}`;
+      matchingRoomNames.length === 1
+        ? `Room: ${matchingRoomNames[0]}`
+        : `Rooms: ${matchingRoomNames.join(", ")}`;
     return `${link}  ${pc.green(`[${roomLabel}]`)}`;
   }
 
