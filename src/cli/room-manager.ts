@@ -88,6 +88,19 @@ export function getLinkMatchingRoomNames(
   return Array.from(matchingRoomNames).sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * Joins a list of lines with one per line, inserting a blank line after every
+ * 80 entries so large batches stay readable.
+ */
+export function joinLinesInChunks(lines: string[]): string {
+  const chunkSize = 80;
+  const chunks: string[] = [];
+  for (let i = 0; i < lines.length; i += chunkSize) {
+    chunks.push(lines.slice(i, i + chunkSize).join("\n"));
+  }
+  return chunks.join("\n\n");
+}
+
 export function formatExtractedLinkGroups(
   items: {
     link: string;
@@ -129,13 +142,13 @@ export function formatExtractedLinkGroups(
     const links = singleRoomMap.get(roomName);
     if (links && links.length > 0) {
       const sortedLinks = [...links].sort(caseInsensitiveCompare);
-      sections.push([`[${roomName}]`, ...sortedLinks].join("\n"));
+      sections.push(`[${roomName}]\n${joinLinesInChunks(sortedLinks)}`);
     }
   }
 
   if (others.length > 0) {
     const sortedOthers = [...others].sort(caseInsensitiveCompare);
-    sections.push(["[others]", ...sortedOthers].join("\n"));
+    sections.push(`[others]\n${joinLinesInChunks(sortedOthers)}`);
   }
 
   if (multiRoomItems.length > 0) {
@@ -143,7 +156,7 @@ export function formatExtractedLinkGroups(
       caseInsensitiveCompare(a.link, b.link),
     );
     const lines = sortedMulti.map((m) => `${m.link} [${m.rooms.join(", ")}]`);
-    sections.push(lines.join("\n"));
+    sections.push(joinLinesInChunks(lines));
   }
 
   return sections;

@@ -50,6 +50,7 @@ import {
   formatGroupLabel,
   formatProvenanceGroupItem,
   formatExtractedLinkGroups,
+  joinLinesInChunks,
   printContactSourceReport,
   printExitableAudit,
   printGroups,
@@ -1063,12 +1064,10 @@ oneoffCmd
 
       saveLinks(newLinks);
 
-      const clipboardText = newLinks.join("\n");
+      const clipboardText = joinLinesInChunks(newLinks);
       const copied = await copyToClipboard(clipboardText);
 
-      for (const link of newLinks) {
-        console.log(link);
-      }
+      console.log(clipboardText);
 
       if (copied) {
         console.log(
@@ -2249,12 +2248,14 @@ interface ExecuteCompareOptions {
   targets: { label: string; filePath: string; room?: Room | null }[];
   title?: string;
   source?: boolean;
+  all?: boolean;
 }
 
 async function executeCompare({
   targets,
   title = "Common Contacts Intersection Analysis",
   source,
+  all,
 }: ExecuteCompareOptions) {
   const filePaths = targets.map((t) => t.filePath);
   const diff = getComparisonDiff(filePaths);
@@ -2270,13 +2271,11 @@ async function executeCompare({
       ? pc.green(` (${diff.newContacts.length.toLocaleString()} new)`)
       : "";
 
-  console.log(
-    pc.bold(
-      pc.yellow(
-        `\nFound ${diff.currentCommon.length.toLocaleString()} common contact(s) across all targets${newBadgeSummary}:\n`,
-      ),
-    ),
-  );
+  const headerSummary = all
+    ? `Found ${diff.currentCommon.length.toLocaleString()} common contact(s) across all targets${newBadgeSummary}:`
+    : `Found ${diff.newContacts.length.toLocaleString()} new common contact(s) across all targets:`;
+
+  console.log(pc.bold(pc.yellow(`\n${headerSummary}\n`)));
 
   const targetRooms = targets
     .map((t) => t.room)
@@ -2291,7 +2290,7 @@ async function executeCompare({
     });
   };
 
-  for (const contact of diff.currentCommon) {
+  for (const contact of all ? diff.currentCommon : diff.newContacts) {
     const isNew = newSet.has(contact);
     const badge = isNew ? `  ${pc.bold(pc.green("[NEW]"))}` : "";
     console.log(`${formatPhoneNumber(contact)}${badge}`);
@@ -2335,10 +2334,11 @@ async function executeCompare({
     }
   }
 
-  const totalSummary =
-    diff.newContacts.length > 0
+  const totalSummary = all
+    ? diff.newContacts.length > 0
       ? `Total Common Contacts: ${diff.currentCommon.length.toLocaleString()} (+${diff.newContacts.length.toLocaleString()} new)`
-      : `Total Common Contacts: ${diff.currentCommon.length.toLocaleString()}`;
+      : `Total Common Contacts: ${diff.currentCommon.length.toLocaleString()}`
+    : `Total New Common Contacts: ${diff.newContacts.length.toLocaleString()}`;
 
   console.log(pc.bold(pc.green(`\n${totalSummary}\n`)));
 
@@ -2467,73 +2467,87 @@ roomCmd
     "-s, --source",
     "Display identified sources alongside each common contact",
   )
-  .action(async (roomIds?: string[], options?: { source?: boolean }) => {
-    try {
-      const allRooms = getRooms();
-      let targetRooms: Room[] = [];
+  .option(
+    "--all",
+    "Show all common contacts, not just new ones (sources are hidden)",
+  )
+  .action(
+    async (
+      roomIds?: string[],
+      options?: { source?: boolean; all?: boolean },
+    ) => {
+      try {
+        const allRooms = getRooms();
+        let targetRooms: Room[] = [];
 
-      if (!roomIds || roomIds.length === 0) {
-        const cfg = getAppConfig();
-        if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
-          for (const id of cfg.defaultCompareRooms) {
+        if (!roomIds || roomIds.length === 0) {
+          const cfg = getAppConfig();
+          if (cfg.defaultCompareRooms && cfg.defaultCompareRooms.length >= 2) {
+            for (const id of cfg.defaultCompareRooms) {
+              const r = getRoomById(id);
+              if (r) targetRooms.push(r);
+            }
+          }
+          if (targetRooms.length < 2) {
+            if (allRooms.length < 2) {
+              console.error(
+                pc.red(
+                  `\n❌ Error: Please provide at least two rooms to compare (or configure at least 2 rooms).\n`,
+                ),
+              );
+              process.exit(1);
+            }
+            targetRooms = allRooms;
+          }
+        } else if (roomIds.length === 1) {
+          console.error(
+            pc.red(
+              `\n❌ Error: Please provide at least two rooms to compare.\n`,
+            ),
+          );
+          process.exit(1);
+        } else {
+          for (const id of roomIds) {
             const r = getRoomById(id);
-            if (r) targetRooms.push(r);
+            if (!r) {
+              console.error(
+                pc.red(
+                  `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
+                ),
+              );
+              process.exit(1);
+            }
+            targetRooms.push(r);
           }
         }
-        if (targetRooms.length < 2) {
-          if (allRooms.length < 2) {
-            console.error(
-              pc.red(
-                `\n❌ Error: Please provide at least two rooms to compare (or configure at least 2 rooms).\n`,
-              ),
-            );
-            process.exit(1);
-          }
-          targetRooms = allRooms;
-        }
-      } else if (roomIds.length === 1) {
+
+        const resolvedTargets = targetRooms.map((r) => {
+          const listName = r.targetList
+            ? normalizeListName(r.targetList)
+            : r.id;
+          return {
+            label: `Room '${r.id}'`,
+            filePath: listName,
+            room: r,
+          };
+        });
+
+        await executeCompare({
+          targets: resolvedTargets,
+          title: "Rooms Common Contacts Intersection Analysis",
+          all: options?.all ?? false,
+          source: options?.all ? false : (options?.source ?? true),
+        });
+      } catch (error) {
         console.error(
-          pc.red(`\n❌ Error: Please provide at least two rooms to compare.\n`),
+          pc.red(
+            `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
+          ),
         );
         process.exit(1);
-      } else {
-        for (const id of roomIds) {
-          const r = getRoomById(id);
-          if (!r) {
-            console.error(
-              pc.red(
-                `\n❌ Error: Room '${id}' not found. Use 'wape rooms list' to see all rooms.\n`,
-              ),
-            );
-            process.exit(1);
-          }
-          targetRooms.push(r);
-        }
       }
-
-      const resolvedTargets = targetRooms.map((r) => {
-        const listName = r.targetList ? normalizeListName(r.targetList) : r.id;
-        return {
-          label: `Room '${r.id}'`,
-          filePath: listName,
-          room: r,
-        };
-      });
-
-      await executeCompare({
-        targets: resolvedTargets,
-        title: "Rooms Common Contacts Intersection Analysis",
-        source: options?.source ?? true,
-      });
-    } catch (error) {
-      console.error(
-        pc.red(
-          `\n❌ Error: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-      process.exit(1);
-    }
-  });
+    },
+  );
 
 roomCmd
   .command("bundle [rooms...]", { hidden: true })
@@ -2666,6 +2680,7 @@ program
         targets: resolvedTargets,
         title: "Common Contacts Intersection Analysis",
         source: options?.source,
+        all: true,
       });
     } catch (error) {
       console.error(
