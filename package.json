@@ -37,6 +37,7 @@
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "postinstall": "node scripts/setup-python.mjs",
     "prepare": "lefthook install"
   },
   "dependencies": {
