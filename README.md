@@ -60,7 +60,7 @@ wape config set --backup /path/to/msgstore.db.crypt15
 
 ## ⚡ Daily Workflows
 
-The root CLI is centered on five everyday verbs for extraction, comparison, and analysis.
+The root CLI is centered on everyday verbs for extraction, comparison, analysis, and device sync.
 
 ### 1. Group & Room Scanning (`wape scan`)
 
@@ -157,6 +157,23 @@ wape source 08012345678 08098765432
 # Pipe numbers from a list or terminal command
 cat leads.txt | wape source
 ```
+
+### 6. Sync Devices (`wape sync`)
+
+Sync `wape.db` and `config.json` between two devices on the same local network. Run the same command with the same sync ID on both machines. `wape` discovers peers with a UDP broadcast, exchanges a normalized snapshot over HTTP, and merges contacts, list memberships, provenance, rooms, links, ignored groups, comparisons, and config settings by their stable natural keys rather than local database row IDs.
+
+```bash
+# On the first device
+wape sync laptop-and-desktop
+
+# On the second device, using the same ID
+wape sync laptop-and-desktop
+
+# Wait longer if the other device is still starting
+wape sync laptop-and-desktop --timeout 120
+```
+
+Sync IDs are case-insensitive. Discovery broadcasts a hash of the ID and the HTTP exchange is authenticated with the ID, so the plain ID is not sent, but you should still use a random unguessable ID. The merge is additive for database records: contacts, memberships, provenance, rooms, links, ignored groups, and comparisons are unioned, so records deleted or renamed on one device are not removed on the other. Conflicting config values prefer the config with the newest `updatedAt`. Both devices print a per-category count of the records they received.
 
 ---
 

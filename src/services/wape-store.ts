@@ -27,6 +27,7 @@ export interface AppConfig {
   key?: string;
   backupPath?: string;
   defaultCompareRooms?: [string, string];
+  updatedAt?: number;
 }
 
 export interface WapeConfigFile {
@@ -34,6 +35,7 @@ export interface WapeConfigFile {
   key?: string;
   backupPath?: string;
   defaultCompareRooms?: [string, string];
+  updatedAt?: number;
 }
 
 export interface IgnoredGroup {
@@ -125,10 +127,12 @@ export function saveAppConfig(
 ): void {
   const file = getWapeConfigFile();
   const current = getAppConfig();
+  const { clearDefaultCompare: _clearDefaultCompare, ...configValues } = config;
   const updated: WapeConfigFile = {
     version: "1.0.0",
     ...current,
-    ...config,
+    ...configValues,
+    updatedAt: config.updatedAt ?? Date.now(),
   };
   if (
     config.clearDefaultCompare ||

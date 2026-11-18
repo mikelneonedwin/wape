@@ -95,6 +95,7 @@ import {
   type RecordProvenanceGroupItem,
   type Room,
 } from "../services/wape-store";
+import { runWapeSync, type SyncReceivedCounts } from "../services/sync";
 
 const program = new Command();
 
@@ -4147,6 +4148,108 @@ program
   .option("--room", "Target a room instead of a list")
   .option("--list", "Target a list instead of a room")
   .action(handleReset);
+
+function printSyncReceivedCounts(
+  received: SyncReceivedCounts,
+  title: string,
+): void {
+  const rows: [keyof SyncReceivedCounts, string][] = [
+    ["contacts", "Contacts"],
+    ["listContacts", "List memberships"],
+    ["lists", "Lists"],
+    ["sources", "Sources"],
+    ["groups", "Groups"],
+    ["contactGroupSources", "Group contact links"],
+    ["rooms", "Rooms"],
+    ["roomGroups", "Room groups"],
+    ["savedLinks", "Saved links"],
+    ["ignoredGroups", "Ignored groups"],
+    ["notedComparisons", "Noted comparisons"],
+    ["notedComparisonContacts", "Comparison contacts"],
+    ["configFields", "Config fields"],
+  ];
+
+  console.log(pc.bold(title));
+  let printed = false;
+  for (const [key, label] of rows) {
+    const count = received[key];
+    if (count > 0) {
+      console.log(`  ${label}: ${pc.green("+" + count.toLocaleString())}`);
+      printed = true;
+    }
+  }
+  if (!printed) {
+    console.log(`  ${pc.dim("No new records")}`);
+  }
+}
+
+program
+  .command("sync <sync-id>")
+  .description(
+    "Sync this device's wape database and config with another device on the same network",
+  )
+  .option(
+    "--timeout <seconds>",
+    "Seconds to wait for a matching device (default: 60)",
+    "60",
+  )
+  .action(async (syncId: string, opts?: { timeout?: string }) => {
+    try {
+      const timeoutSeconds = opts?.timeout ? Number(opts.timeout) : 60;
+      if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+        console.error(
+          pc.red("\n❌ Error: --timeout must be a positive number.\n"),
+        );
+        process.exit(1);
+      }
+      if (!syncId.trim()) {
+        console.error(pc.red("\n❌ Error: sync ID cannot be empty.\n"));
+        process.exit(1);
+      }
+
+      const result = await runWapeSync({
+        syncId,
+        timeoutMs: Math.floor(timeoutSeconds * 1000),
+        onStatus: (message) => console.log(pc.dim(message)),
+      });
+
+      const peerName = result.peer.hostname ?? result.peer.address;
+      console.log(pc.cyan("\n" + "=".repeat(68)));
+      console.log(
+        pc.bold(
+          pc.green(
+            `                 SYNC COMPLETE (${result.role === "initiator" ? "initiator" : "responder"})`,
+          ),
+        ),
+      );
+      console.log("=".repeat(68));
+      console.log(
+        `${pc.bold("Sync ID:")}              ${pc.cyan(syncId.trim())}`,
+      );
+      console.log(`${pc.bold("Peer:")}                  ${peerName}`);
+      console.log(
+        `${pc.bold("Duration:")}              ${pc.dim((result.durationMs / 1000).toFixed(1) + "s")}`,
+      );
+      console.log("");
+      printSyncReceivedCounts(result.received, "Received on this device:");
+      if (result.peerTotalReceived !== undefined) {
+        console.log("");
+        console.log(
+          pc.dim(
+            `Peer reports receiving ${result.peerTotalReceived.toLocaleString()} record(s).`,
+          ),
+        );
+      }
+      console.log("\n" + "=".repeat(68) + "\n");
+    } catch (error) {
+      console.error(
+        pc.red(
+          `\n❌ Sync failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      );
+      process.exit(1);
+    }
+  });
 
 /**
  * Configuration Command
