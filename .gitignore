@@ -1,7 +1,5 @@
 node_modules/
 .venv/
-.env
-.env.local
 *.db
 *.db-wal
 *.db-shm
