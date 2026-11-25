@@ -431,6 +431,69 @@ describe("Room Store and Management", () => {
     deleteRoom(roomId);
   });
 
+  it("resolves contacts for removed group JIDs and removes them from the room list", async () => {
+    const {
+      saveRoom,
+      deleteRoom,
+      saveContactsToList,
+      getContactsFromList,
+      getContactsForGroupJids,
+      removeContactsFromList,
+      recordScanProvenance,
+      clearListContacts,
+    } = await import("../src/services/wape-store");
+
+    const roomId = "test-remove-group-contacts-room";
+    const groupAJid = "1203639901@g.us";
+    const groupBJid = "1203639902@g.us";
+
+    saveRoom({
+      id: roomId,
+      groupIds: [groupAJid, groupBJid],
+      groupNames: ["Wrong Group", "Right Group"],
+      targetList: roomId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    saveContactsToList(
+      roomId,
+      new Set(["08011111111", "08022222222", "08033333333"]),
+    );
+
+    recordScanProvenance({
+      type: "primary",
+      label: "Test Backup",
+      groups: [
+        {
+          jid: groupAJid,
+          subject: "Wrong Group",
+          communityName: null,
+          phones: ["08011111111", "08022222222"],
+        },
+        {
+          jid: groupBJid,
+          subject: "Right Group",
+          communityName: null,
+          phones: ["08033333333"],
+        },
+      ],
+    });
+
+    const contactsToRemove = getContactsForGroupJids([groupAJid]);
+    expect(contactsToRemove.size).toBe(2);
+
+    const removeRes = removeContactsFromList(roomId, contactsToRemove);
+    expect(removeRes.removedCount).toBe(2);
+    expect(removeRes.totalCount).toBe(1);
+
+    const remaining = getContactsFromList(roomId);
+    expect(remaining.size).toBe(1);
+
+    clearListContacts(roomId);
+    deleteRoom(roomId);
+  });
+
   it("searches and ranks groups scanned via one-off backups", async () => {
     const { recordScanProvenance, searchOneoffGroups } =
       await import("../src/services/wape-store");

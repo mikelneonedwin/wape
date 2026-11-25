@@ -8,12 +8,14 @@ import {
   type ResolvedRoomGroupItem,
 } from "../services/extractor";
 import {
+  getContactsForGroupJids,
   getListContactCount,
   getIgnoredJidSet,
   getRoomById,
   getRooms,
   isGroupInRoom,
   normalizeListName,
+  removeContactsFromList,
   saveRoom,
   type ContactProvenanceGroup,
   type Room,
@@ -1157,11 +1159,27 @@ export async function removeGroupsFromRoomInteractive(
 
   saveRoom(room);
 
+  const removedJids = selectedIdsToRemove.map((id) => String(id));
+  const contactsToRemove = getContactsForGroupJids(removedJids);
+  const removeResult =
+    contactsToRemove.size > 0
+      ? removeContactsFromList(room.id, contactsToRemove)
+      : null;
+
   console.log(
     pc.green(
-      `\n✅ Removed ${selectedIdsToRemove.length} group(s) from room '${room.id}' (${room.groupIds.length} groups remaining).\n`,
+      `\n✅ Removed ${selectedIdsToRemove.length} group(s) from room '${room.id}' (${room.groupIds.length} groups remaining).`,
     ),
   );
+  if (removeResult && removeResult.removedCount > 0) {
+    console.log(
+      pc.green(
+        `   Removed ${removeResult.removedCount} contact(s) from room '${room.id}' (${removeResult.totalCount} contacts remaining).\n`,
+      ),
+    );
+  } else {
+    console.log();
+  }
 }
 
 export async function manageRoomsMenu(groups: GroupSummary[]): Promise<void> {

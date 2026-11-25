@@ -778,6 +778,29 @@ export function addContactsToList(
   };
 }
 
+export function getContactsForGroupJids(groupJids: string[]): Set<string> {
+  const result = new Set<string>();
+  const cleanJids = groupJids.map((j) => j.trim()).filter(Boolean);
+  if (cleanJids.length === 0) return result;
+
+  const db = getWapeDb();
+  const placeholders = cleanJids.map(() => "?").join(", ");
+  const rows = db
+    .query(
+      `SELECT DISTINCT c.phone
+       FROM contacts c
+       JOIN contact_group_sources cgs ON cgs.contact_id = c.id
+       JOIN groups g ON g.id = cgs.group_id
+       WHERE g.jid IN (${placeholders})`,
+    )
+    .all(...cleanJids) as { phone: string }[];
+
+  for (const row of rows) {
+    result.add(row.phone);
+  }
+  return result;
+}
+
 export function removeContactsFromList(
   listName: string,
   contactsToRemove: Set<string>,
