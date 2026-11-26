@@ -4439,6 +4439,61 @@ configCmd.action(() => {
   configCmd.outputHelp();
 });
 
+program
+  .command("find <room> <query>")
+  .description(
+    "Case-insensitive search for groups matching <query> in both one-off scans and <room>",
+  )
+  .action((roomId: string, query: string) => {
+    const room = getRoomById(roomId);
+    if (!room) {
+      console.error(
+        pc.red(
+          `\n❌ Error: Room '${roomId}' not found. Use 'wape rooms list' to see all rooms.\n`,
+        ),
+      );
+      process.exit(1);
+    }
+
+    const needle = query.trim().toLowerCase();
+    const oneoffMatches = searchOneoffGroups(query);
+    const roomMatches = resolveRoomGroups(room, undefined).resolvedItems.filter(
+      (item) => item.subject.toLowerCase().includes(needle),
+    );
+
+    if (oneoffMatches.length === 0 && roomMatches.length === 0) {
+      console.log(
+        pc.yellow(
+          `\nNo groups matching '${query}' found in one-off scans or room '${room.id}'.\n`,
+        ),
+      );
+      return;
+    }
+
+    if (oneoffMatches.length > 0) {
+      handleOneoffGroupSearch(query);
+    }
+
+    if (roomMatches.length > 0) {
+      console.log(pc.cyan("\n" + "=".repeat(75)));
+      console.log(
+        pc.bold(
+          pc.cyan(
+            `🏠 ROOM '${room.id.toUpperCase()}' MATCHES: "${query}" (${roomMatches.length} group${roomMatches.length === 1 ? "" : "s"})`,
+          ),
+        ),
+      );
+      console.log("=".repeat(75));
+      roomMatches.forEach((item, idx) => {
+        const num = pc.dim((idx + 1).toString().padStart(2, " ") + ".");
+        console.log(
+          `  ${num} ${pc.white(item.subject)} ${pc.dim(`(ID: ${item.id})`)}`,
+        );
+      });
+      console.log("=".repeat(75) + "\n");
+    }
+  });
+
 if (process.argv.length <= 2) {
   program.outputHelp();
   process.exit(0);
