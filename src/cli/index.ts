@@ -3172,8 +3172,90 @@ program
 /**
  * WhatsApp Group Invite Links Handlers & Command
  */
-async function handleExtractLinks(options?: { backup?: string; key?: string }) {
+async function handleExtractLinks(
+  roomId?: string,
+  options?: { backup?: string; key?: string },
+) {
   try {
+    if (roomId) {
+      const room = getRoomById(roomId);
+      if (!room) {
+        console.error(pc.red(`\n❌ Error: Room '${roomId}' not found.\n`));
+        process.exit(1);
+      }
+
+      const { db, groups } = await loadDbAndGroups(
+        options?.backup,
+        options?.key,
+      );
+      const resolved = resolveRoomGroups(room, groups);
+      const activeJidSet = new Set(resolved.activeJidStrings);
+      const activeRowIdSet = new Set(resolved.activeJidRowIds);
+
+      if (activeJidSet.size === 0 && activeRowIdSet.size === 0) {
+        console.log(
+          pc.yellow(
+            `\nNo available groups found in room '${room.id}' in the current backup.\n`,
+          ),
+        );
+        return;
+      }
+
+      const extractedLinksWithSources =
+        await extractWhatsAppGroupLinksWithSources(db);
+      const roomLinks = extractedLinksWithSources
+        .filter((item) =>
+          item.sources.some(
+            (s) =>
+              (s.jid && activeJidSet.has(s.jid)) ||
+              activeRowIdSet.has(s.chatRowId),
+          ),
+        )
+        .map((item) => item.link);
+
+      if (roomLinks.length === 0) {
+        console.log(
+          pc.yellow(
+            `\nNo WhatsApp group invite links found in room '${room.id}'.\n`,
+          ),
+        );
+        return;
+      }
+
+      const recordedLinks = new Set(getSavedLinks());
+      const newLinks = roomLinks.filter((link) => !recordedLinks.has(link));
+      const oldLinks = roomLinks.filter((link) => recordedLinks.has(link));
+      if (newLinks.length > 0) {
+        saveLinks(newLinks);
+      }
+
+      const sections: string[] = [];
+      if (newLinks.length > 0) {
+        sections.push(`[new]\n${joinLinesInChunks(newLinks)}`);
+      }
+      if (oldLinks.length > 0) {
+        sections.push(`[old]\n${joinLinesInChunks(oldLinks)}`);
+      }
+
+      const outputText = sections.join("\n\n");
+      const copied = await copyToClipboard(outputText);
+
+      console.log(outputText);
+
+      if (copied) {
+        const savedNote =
+          newLinks.length > 0
+            ? ` (${newLinks.length.toLocaleString()} new saved)`
+            : "";
+        console.log(
+          pc.dim(
+            `\n📋 Copied ${roomLinks.length.toLocaleString()} link(s) from room '${room.id}' to clipboard.${savedNote}\n`,
+          ),
+        );
+      }
+      return;
+    }
+
     const { db } = await loadDbAndGroups(options?.backup, options?.key);
     const extractedLinksWithSources =
       await extractWhatsAppGroupLinksWithSources(db);
@@ -3289,9 +3371,9 @@ const linksCmd = program
   );
 
 linksCmd
-  .command("extract", { isDefault: true })
+  .command("extract [roomId]", { isDefault: true })
   .description(
-    `Extract all newly found WhatsApp group invite links from backup, record to ${getSavedLinksFile()}, print, and copy them`,
+    `Extract WhatsApp group invite links from backup (or all links from a specific room), record new ones to ${getSavedLinksFile()}, print, and copy them`,
   )
   .option(
     "-b, --backup <path>",
