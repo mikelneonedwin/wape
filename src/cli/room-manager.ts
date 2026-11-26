@@ -196,7 +196,38 @@ export function printContactSourceReport(
     ReturnType<typeof import("../services/wape-store").getContactProvenance>
   >,
   normalizedPhone: string,
+  options?: { roomId?: string },
 ): void {
+  const roomFilter = options?.roomId?.trim().toLowerCase();
+  if (roomFilter) {
+    const roomGroups = provenance.groups.filter((g) =>
+      g.rooms?.some((r) => r.toLowerCase() === roomFilter),
+    );
+    if (roomGroups.length === 0) {
+      return;
+    }
+
+    console.log(pc.cyan("\n" + "=".repeat(66)));
+    console.log(
+      pc.bold(
+        pc.cyan(
+          `📱 CONTACT SOURCE REPORT: ${formatPhoneNumber(normalizedPhone)} (${normalizedPhone})`,
+        ),
+      ),
+    );
+    console.log("=".repeat(66));
+    console.log(
+      pc.bold(pc.underline(`\nIDENTIFIED GROUPS (Room: ${roomFilter}):`)),
+    );
+    roomGroups.forEach((g, gIdx) => {
+      console.log(
+        `  ${pc.bold(`${gIdx + 1}.`)} ${formatProvenanceGroupItem(g)}`,
+      );
+    });
+    console.log("");
+    return;
+  }
+
   if (
     provenance.groups.length === 0 &&
     provenance.rooms.length === 0 &&

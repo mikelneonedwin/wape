@@ -18,6 +18,7 @@ process.env.WAPE_HOME = sandboxDir;
 import { describe, expect, it } from "bun:test";
 import type { AppDatabase } from "../src/db";
 import {
+  extractNigerianPhoneNumbersFromText,
   formatPhoneNumber,
   normalizeNigerianPhoneNumber,
 } from "../src/services/phone";
@@ -76,6 +77,25 @@ describe("Nigerian Phone Parser & Formatter", () => {
     expect(formatPhoneNumber("08012345678")).toBe("0801 234 5678");
     expect(formatPhoneNumber("2349012345678")).toBe("0901 234 5678");
     expect(formatPhoneNumber("+2347037761092")).toBe("0703 776 1092");
+  });
+
+  it("extracts and deduplicates Nigerian phone numbers from arbitrary CLI output", () => {
+    const cliOutput = [
+      "\x1b[1m=== Common Contacts Intersection Analysis ===\x1b[0m",
+      "Rooms: gunner, norm (Total: 42)",
+      "1. \x1b[36m0801 234 5678\x1b[39m • Group Alpha",
+      "2. +2349012345678",
+      "3. 08012345678 (duplicate of first)",
+      "4. 703-776-1092",
+      "Timestamp: 2026-11-26 22:31:22, ID: 123456789012345",
+    ].join("\n");
+
+    expect(extractNigerianPhoneNumbersFromText(cliOutput)).toEqual([
+      "+2348012345678",
+      "+2349012345678",
+      "+2347037761092",
+    ]);
+    expect(extractNigerianPhoneNumbersFromText("No contacts here")).toEqual([]);
   });
 });
 

@@ -54,6 +54,36 @@ export function normalizeOwnerPhoneNumber(raw: string): string | null {
 }
 
 /**
+ * Extracts and deduplicates valid Nigerian phone numbers from arbitrary text
+ * (e.g., piped CLI output containing ANSI codes, headers, bullets, or formatted numbers).
+ * Preserves the order of first appearance.
+ */
+export function extractNigerianPhoneNumbersFromText(text: string): string[] {
+  if (!text) return [];
+
+  // Strip ANSI escape sequences so color codes never interfere with digit boundaries
+  const ansiRegex = new RegExp(
+    `${String.fromCharCode(27)}\\[[0-9;]*[a-zA-Z]`,
+    "g",
+  );
+  const plain = text.replace(ansiRegex, "");
+  const pattern = /(?<!\d)(?:(?:\+?234|0)[\s.-]*)?[789](?:[\s.-]*\d){9}(?!\d)/g;
+
+  const seen = new Set<string>();
+  const results: string[] = [];
+
+  for (const match of plain.matchAll(pattern)) {
+    const normalized = normalizeNigerianPhoneNumber(match[0]);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      results.push(normalized);
+    }
+  }
+
+  return results;
+}
+
+/**
  * Formats a Nigerian phone number into "XXXX XXX XXXX" format (e.g. "0801 234 5678").
  * If the number is an international E.164 number, returns formatted E.164.
  */

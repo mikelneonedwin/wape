@@ -41,6 +41,7 @@ import {
   unmergeContactsFromFile,
 } from "../services/file-manager";
 import {
+  extractNigerianPhoneNumbersFromText,
   formatPhoneNumber,
   normalizeNigerianPhoneNumber,
 } from "../services/phone";
@@ -4098,63 +4099,136 @@ const sourceCmd = program
   .description(
     "Display all groups, communities, backup sources, and lists one or more contacts have been identified in",
   )
-  .action((numbers?: string[]) => {
-    let inputs = numbers ? [...numbers] : [];
+  .option(
+    "-g, --group <query>",
+    "Filter to contacts whose identified groups include a case-insensitive match for <query>",
+  )
+  .option("-r, --room <roomId>", "Only print groups from the specified room ID")
+  .option("-c, --copy", "Copy the matched contacts to the clipboard")
+  .action(
+    async (
+      numbers?: string[],
+      options?: { group?: string; room?: string; copy?: boolean },
+    ) => {
+      let inputs = numbers ? [...numbers] : [];
+      let fromStdin = false;
 
-    if (inputs.length === 0 && !process.stdin.isTTY) {
-      try {
-        const stdinData = readFileSync(0, "utf-8");
-        const lines = stdinData
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .filter((l) => l.length > 0);
-        inputs = lines;
-      } catch {
-        // Fall back gracefully if reading stdin fails
+      if (inputs.length === 0 && !process.stdin.isTTY) {
+        try {
+          const stdinData = readFileSync(0, "utf-8");
+          inputs = extractNigerianPhoneNumbersFromText(stdinData);
+          fromStdin = true;
+        } catch {
+          // Fall back gracefully if reading stdin fails
+        }
       }
-    }
 
-    if (inputs.length === 0) {
-      console.log(sourceCmd.helpInformation());
-      return;
-    }
+      if (inputs.length === 0) {
+        if (fromStdin) {
+          console.log(
+            pc.yellow("\nNo valid Nigerian phone numbers found in stdin.\n"),
+          );
+        } else {
+          console.log(sourceCmd.helpInformation());
+        }
+        return;
+      }
 
-    const validEntries: { raw: string; normalized: string }[] = [];
-    for (const num of inputs) {
-      const clean = num.trim();
-      if (!clean) continue;
-      const normalized = normalizeNigerianPhoneNumber(clean);
-      if (!normalized) {
-        console.error(
-          pc.red(`\n❌ Error: Invalid Nigerian phone number: '${num}'\n`),
+      const validEntries: { raw: string; normalized: string }[] = [];
+      for (const num of inputs) {
+        const clean = num.trim();
+        if (!clean) continue;
+        const normalized = normalizeNigerianPhoneNumber(clean);
+        if (!normalized) {
+          console.error(
+            pc.red(`\n❌ Error: Invalid Nigerian phone number: '${num}'\n`),
+          );
+          process.exit(1);
+        }
+        validEntries.push({ raw: num, normalized });
+      }
+
+      if (validEntries.length === 0) {
+        console.log(sourceCmd.helpInformation());
+        return;
+      }
+
+      const groupQuery = options?.group?.trim().toLowerCase() ?? "";
+      const roomFilter = options?.room?.trim().toLowerCase() ?? "";
+      const matchedContacts: string[] = [];
+
+      for (let i = 0; i < validEntries.length; i++) {
+        const entry = validEntries[i]!;
+        const normalized = entry.normalized;
+        const provenance = getContactProvenance(normalized);
+
+        if (!provenance) {
+          if (!groupQuery && !roomFilter) {
+            console.log(
+              pc.yellow(
+                `\nNo provenance records found for contact: ${formatPhoneNumber(normalized)} (${normalized})\n`,
+              ),
+            );
+          }
+          continue;
+        }
+
+        const candidateGroups = roomFilter
+          ? provenance.groups.filter((g) =>
+              g.rooms?.some((r) => r.toLowerCase() === roomFilter),
+            )
+          : provenance.groups;
+
+        if (roomFilter && candidateGroups.length === 0) {
+          continue;
+        }
+
+        if (groupQuery) {
+          const hasMatchingGroup = candidateGroups.some((g) =>
+            g.subject.toLowerCase().includes(groupQuery),
+          );
+          if (!hasMatchingGroup) {
+            continue;
+          }
+        }
+
+        matchedContacts.push(normalized);
+        printContactSourceReport(
+          provenance,
+          normalized,
+          roomFilter ? { roomId: roomFilter } : undefined,
         );
-        process.exit(1);
       }
-      validEntries.push({ raw: num, normalized });
-    }
 
-    if (validEntries.length === 0) {
-      console.log(sourceCmd.helpInformation());
-      return;
-    }
-
-    for (let i = 0; i < validEntries.length; i++) {
-      const entry = validEntries[i]!;
-      const normalized = entry.normalized;
-      const provenance = getContactProvenance(normalized);
-
-      if (!provenance) {
+      if ((groupQuery || roomFilter) && matchedContacts.length === 0) {
+        const filters: string[] = [];
+        if (roomFilter) filters.push(`room '${options?.room?.trim()}'`);
+        if (groupQuery)
+          filters.push(`group matching '${options?.group?.trim()}'`);
         console.log(
-          pc.yellow(
-            `\nNo provenance records found for contact: ${formatPhoneNumber(normalized)} (${normalized})\n`,
-          ),
+          pc.yellow(`\nNo contacts found with ${filters.join(" and ")}.\n`),
         );
-        continue;
       }
 
-      printContactSourceReport(provenance, normalized);
-    }
-  });
+      if (options?.copy && matchedContacts.length > 0) {
+        const clipboardText = matchedContacts
+          .map((p) => formatPhoneNumber(p))
+          .join("\n");
+        const copied = await copyToClipboard(clipboardText);
+        if (copied) {
+          console.log(
+            pc.green(
+              `\n📋 Copied ${matchedContacts.length} contact(s) to clipboard.\n`,
+            ),
+          );
+        } else {
+          console.log(
+            pc.yellow("\n⚠️  Could not copy contacts to clipboard.\n"),
+          );
+        }
+      }
+    },
+  );
 
 /**
  * Backward-Compatibility Root Command Aliases (Hidden from help)
