@@ -434,8 +434,8 @@ export function resolveRoomGroups(
       .filter((s): s is string => s !== null);
 
     return {
-      activeJidRowIds,
-      activeJidStrings,
+      activeJidRowIds: Array.from(new Set(activeJidRowIds)),
+      activeJidStrings: Array.from(new Set(activeJidStrings)),
       resolvedItems: fallbackItems,
       missingCount: 0,
       activeCount: ids.length,
@@ -609,8 +609,8 @@ export function resolveRoomGroups(
   const activeCount = resolvedItems.length - missingCount;
 
   return {
-    activeJidRowIds,
-    activeJidStrings,
+    activeJidRowIds: Array.from(new Set(activeJidRowIds)),
+    activeJidStrings: Array.from(new Set(activeJidStrings)),
     resolvedItems,
     missingCount,
     activeCount,

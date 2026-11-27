@@ -1006,13 +1006,19 @@ export async function addGroupsToRoomInteractive(
   const otherRoomJidStrings = new Set(
     otherRoomsResolved.flatMap((res) => res.activeJidStrings),
   );
+  const otherRoomJidRowIds = new Set(
+    otherRoomsResolved.flatMap((res) => res.activeJidRowIds),
+  );
   const existingJidStrings = new Set(resolved.activeJidStrings);
+  const existingJidRowIds = new Set(resolved.activeJidRowIds);
   const ignoredJids = getIgnoredJidSet();
 
   const availableGroups = groups.filter(
     (g) =>
       !existingJidStrings.has(g.jidString) &&
+      !existingJidRowIds.has(g.jidRowId) &&
       !otherRoomJidStrings.has(g.jidString) &&
+      !otherRoomJidRowIds.has(g.jidRowId) &&
       !ignoredJids.has(g.jidString.toLowerCase()),
   );
 

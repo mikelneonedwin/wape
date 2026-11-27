@@ -1098,7 +1098,7 @@ export function syncRoomsBatchToStore(options: {
       "CREATE TEMP TABLE IF NOT EXISTS temp_rj (jid_row_id INTEGER PRIMARY KEY)",
     );
     const insRoomJid = db.prepare(
-      "INSERT INTO temp_rj (jid_row_id) VALUES (?)",
+      "INSERT OR IGNORE INTO temp_rj (jid_row_id) VALUES (?)",
     );
 
     for (const roomItem of options.rooms) {
