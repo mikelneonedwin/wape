@@ -1287,7 +1287,13 @@ oneoffCmd
 
         saveNotedComparison(filePaths, diff.currentCommon);
         if (newLinks.length > 0) {
-          saveLinks(newLinks);
+          saveLinks(
+            newLinksWithSources.map((item) => ({
+              url: item.link,
+              groupJid: item.sources[0]?.jid,
+              groupName: item.sources[0]?.subject,
+            })),
+          );
         }
 
         if (clipboardItems.length === 0) {
@@ -2438,7 +2444,13 @@ async function executeBundle(
 
   saveNotedComparison(filePaths, diff.currentCommon);
   if (newLinks.length > 0) {
-    saveLinks(newLinks);
+    saveLinks(
+      newLinksWithSources.map((item) => ({
+        url: item.link,
+        groupJid: item.sources[0]?.jid,
+        groupName: item.sources[0]?.subject,
+      })),
+    );
   }
 
   if (clipboardItems.length === 0) {
@@ -3175,13 +3187,24 @@ program
  */
 async function handleExtractLinks(
   roomId?: string,
-  options?: { backup?: string; key?: string },
+  options?: {
+    backup?: string;
+    key?: string;
+    room?: string;
+    group?: string;
+    copy?: boolean;
+  },
 ) {
   try {
-    if (roomId) {
-      const room = getRoomById(roomId);
+    const effectiveRoomId = options?.room ?? roomId;
+    const groupQuery = options?.group?.trim().toLowerCase();
+
+    if (effectiveRoomId) {
+      const room = getRoomById(effectiveRoomId);
       if (!room) {
-        console.error(pc.red(`\n❌ Error: Room '${roomId}' not found.\n`));
+        console.error(
+          pc.red(`\n❌ Error: Room '${effectiveRoomId}' not found.\n`),
+        );
         process.exit(1);
       }
 
@@ -3208,8 +3231,10 @@ async function handleExtractLinks(
         .filter((item) =>
           item.sources.some(
             (s) =>
-              (s.jid && activeJidSet.has(s.jid)) ||
-              activeRowIdSet.has(s.chatRowId),
+              ((s.jid && activeJidSet.has(s.jid)) ||
+                activeRowIdSet.has(s.chatRowId)) &&
+              (!groupQuery ||
+                (s.subject ?? "").toLowerCase().includes(groupQuery)),
           ),
         )
         .map((item) => item.link);
@@ -3224,10 +3249,33 @@ async function handleExtractLinks(
       }
 
       const recordedLinks = new Set(getSavedLinks());
+      const newRoomLinkItems = extractedLinksWithSources.filter(
+        (item) =>
+          !recordedLinks.has(item.link) &&
+          item.sources.some(
+            (s) =>
+              (s.jid && activeJidSet.has(s.jid)) ||
+              activeRowIdSet.has(s.chatRowId),
+          ),
+      );
       const newLinks = roomLinks.filter((link) => !recordedLinks.has(link));
       const oldLinks = roomLinks.filter((link) => recordedLinks.has(link));
-      if (newLinks.length > 0) {
-        saveLinks(newLinks);
+      if (newRoomLinkItems.length > 0) {
+        saveLinks(
+          newRoomLinkItems.map((item) => {
+            const matchedSource =
+              item.sources.find(
+                (s) =>
+                  (s.jid && activeJidSet.has(s.jid)) ||
+                  activeRowIdSet.has(s.chatRowId),
+              ) ?? item.sources[0];
+            return {
+              url: item.link,
+              groupJid: matchedSource?.jid,
+              groupName: matchedSource?.subject,
+            };
+          }),
+        );
       }
 
       const sections: string[] = [];
@@ -3258,8 +3306,15 @@ async function handleExtractLinks(
     }
 
     const { db } = await loadDbAndGroups(options?.backup, options?.key);
-    const extractedLinksWithSources =
+    const rawExtractedLinksWithSources =
       await extractWhatsAppGroupLinksWithSources(db);
+    const extractedLinksWithSources = groupQuery
+      ? rawExtractedLinksWithSources.filter((item) =>
+          item.sources.some((s) =>
+            (s.subject ?? "").toLowerCase().includes(groupQuery),
+          ),
+        )
+      : rawExtractedLinksWithSources;
 
     if (extractedLinksWithSources.length === 0) {
       console.log(
@@ -3283,7 +3338,13 @@ async function handleExtractLinks(
       return;
     }
 
-    saveLinks(newLinks);
+    saveLinks(
+      newLinksWithSources.map((item) => ({
+        url: item.link,
+        groupJid: item.sources[0]?.jid,
+        groupName: item.sources[0]?.subject,
+      })),
+    );
 
     const allRooms = getRooms();
     const formattedLinkSections = formatExtractedLinkGroups(
@@ -3314,15 +3375,14 @@ async function handleExtractLinks(
 }
 
 async function handleSavedLinks(
-  opts: ExportFilterOptions & { count?: boolean },
+  opts: ExportFilterOptions & {
+    copy?: boolean;
+    room?: string;
+    group?: string;
+  },
 ) {
   try {
     const links = getSavedLinks(opts);
-
-    if (opts.count) {
-      console.log(links.length);
-      return;
-    }
 
     if (links.length === 0) {
       if (process.stdout.isTTY) {
@@ -3336,10 +3396,24 @@ async function handleSavedLinks(
     }
 
     if (!process.stdout.isTTY) {
+      if (opts.copy) {
+        await copyToClipboard(links.join("\n"));
+      }
       for (const link of links) {
         process.stdout.write(link + "\n");
       }
       return;
+    }
+
+    if (opts.copy) {
+      const copied = await copyToClipboard(links.join("\n"));
+      if (copied) {
+        console.log(
+          pc.green(`\n📋 Copied ${links.length} link(s) to clipboard.\n`),
+        );
+      } else {
+        console.log(pc.yellow("\n⚠️  Failed to copy links to clipboard.\n"));
+      }
     }
 
     for (const link of links) {
@@ -3381,6 +3455,15 @@ linksCmd
     "Path to WhatsApp backup file (.crypt15, .crypt14, .crypt12, or decrypted SQLite .db)",
   )
   .option("-k, --key <key>", "Decryption key for encrypted backups")
+  .option(
+    "--room <id>",
+    "Filter links to only those from groups in the specified room",
+  )
+  .option(
+    "-g, --group <query>",
+    "Filter links to only those from groups matching <query> (case-insensitive)",
+  )
+  .option("-c, --copy", "Copy the matching links to the clipboard")
   .action(handleExtractLinks);
 
 linksCmd
@@ -3405,9 +3488,14 @@ linksCmd
     "Limit to the last N most recently saved links (e.g. --last 20, --last 40)",
   )
   .option(
-    "-c, --count",
-    "Print the total count of matching links rather than printing the links",
+    "--room <id>",
+    "Filter links to only those from groups in the specified room",
   )
+  .option(
+    "-g, --group <query>",
+    "Filter links to only those from groups matching <query> (case-insensitive)",
+  )
+  .option("-c, --copy", "Copy the matching links to the clipboard")
   .action(handleSavedLinks);
 
 /**
@@ -4052,9 +4140,14 @@ chatsCmd
     "Limit to the last N most recently saved links (e.g. --last 20, --last 40)",
   )
   .option(
-    "-c, --count",
-    "Print the total count of matching links rather than printing the links",
+    "--room <id>",
+    "Filter links to only those from groups in the specified room",
   )
+  .option(
+    "-g, --group <query>",
+    "Filter links to only those from groups matching <query> (case-insensitive)",
+  )
+  .option("-c, --copy", "Copy the matching links to the clipboard")
   .action(handleSavedLinks);
 
 chatsCmd

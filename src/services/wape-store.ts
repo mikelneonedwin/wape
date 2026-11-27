@@ -250,7 +250,9 @@ function initWapeDbSchema(db: Database): void {
 
     CREATE TABLE IF NOT EXISTS saved_links (
       url TEXT PRIMARY KEY,
-      saved_at INTEGER NOT NULL
+      saved_at INTEGER NOT NULL,
+      group_jid TEXT,
+      group_name TEXT
     );
 
     CREATE TABLE IF NOT EXISTS ignored_groups (
@@ -278,6 +280,17 @@ function initWapeDbSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_cgs_group ON contact_group_sources(group_id);
     CREATE INDEX IF NOT EXISTS idx_lc_contact ON list_contacts(contact_id);
   `);
+
+  const savedLinksCols = db.query(`PRAGMA table_info(saved_links)`).all() as {
+    name: string;
+  }[];
+  const savedLinksColNames = new Set(savedLinksCols.map((c) => c.name));
+  if (!savedLinksColNames.has("group_jid")) {
+    db.run(`ALTER TABLE saved_links ADD COLUMN group_jid TEXT`);
+  }
+  if (!savedLinksColNames.has("group_name")) {
+    db.run(`ALTER TABLE saved_links ADD COLUMN group_name TEXT`);
+  }
 
   // Ensure default global lists exist
   const now = Date.now();
@@ -1713,7 +1726,9 @@ export function renameRoomId(
 /**
  * Links API
  */
-export function getSavedLinks(filterOpts?: ExportFilterOptions): string[] {
+export function getSavedLinks(
+  filterOpts?: ExportFilterOptions & { room?: string; group?: string },
+): string[] {
   const db = getWapeDb();
   let sql = `SELECT url, saved_at FROM saved_links`;
   const params: (number | string)[] = [];
@@ -1728,6 +1743,25 @@ export function getSavedLinks(filterOpts?: ExportFilterOptions): string[] {
     if (endTime !== undefined) {
       conditions.push(`saved_at <= ?`);
       params.push(endTime);
+    }
+    if (filterOpts.room) {
+      const room = getRooms().find((r) => r.id === filterOpts.room);
+      if (!room) {
+        throw new Error(`Room '${filterOpts.room}' not found.`);
+      }
+      const groupIds = room.groupIds ?? [];
+      if (groupIds.length === 0) {
+        return [];
+      }
+      const placeholders = groupIds.map(() => "?").join(", ");
+      conditions.push(`group_jid IN (${placeholders})`);
+      for (const g of groupIds) {
+        params.push(String(g));
+      }
+    }
+    if (filterOpts.group) {
+      conditions.push(`LOWER(group_name) LIKE LOWER(?)`);
+      params.push(`%${filterOpts.group}%`);
     }
     if (conditions.length > 0) {
       sql += ` WHERE ` + conditions.join(" AND ");
@@ -1758,7 +1792,12 @@ export function getSavedLinks(filterOpts?: ExportFilterOptions): string[] {
   }
 }
 
-export function saveLinks(newLinks: string[]): {
+export function saveLinks(
+  newLinks: (
+    | string
+    | { url: string; groupJid?: string | null; groupName?: string | null }
+  )[],
+): {
   addedCount: number;
   totalCount: number;
 } {
@@ -1767,19 +1806,37 @@ export function saveLinks(newLinks: string[]): {
   let addedCount = 0;
 
   db.transaction(() => {
-    for (const link of newLinks) {
-      const trimmed = link.trim();
-      if (trimmed) {
-        const existing = db
-          .query(`SELECT url FROM saved_links WHERE url = ?`)
-          .get(trimmed);
-        if (!existing) {
-          db.run(`INSERT INTO saved_links (url, saved_at) VALUES (?, ?)`, [
-            trimmed,
-            now,
-          ]);
-          addedCount++;
-        }
+    for (const entry of newLinks) {
+      const rawUrl = typeof entry === "string" ? entry : entry.url;
+      const trimmed = rawUrl.trim();
+      if (!trimmed) continue;
+
+      const groupJid = typeof entry === "string" ? undefined : entry.groupJid;
+      const groupName = typeof entry === "string" ? undefined : entry.groupName;
+
+      const existing = db
+        .query(
+          `SELECT url, group_jid, group_name FROM saved_links WHERE url = ?`,
+        )
+        .get(trimmed) as {
+        url: string;
+        group_jid: string | null;
+        group_name: string | null;
+      } | null;
+      if (!existing) {
+        db.run(
+          `INSERT INTO saved_links (url, saved_at, group_jid, group_name) VALUES (?, ?, ?, ?)`,
+          [trimmed, now, groupJid ?? null, groupName ?? null],
+        );
+        addedCount++;
+      } else if (
+        (existing.group_jid === null && groupJid) ||
+        (existing.group_name === null && groupName)
+      ) {
+        db.run(
+          `UPDATE saved_links SET group_jid = COALESCE(group_jid, ?), group_name = COALESCE(group_name, ?) WHERE url = ?`,
+          [groupJid ?? null, groupName ?? null, trimmed],
+        );
       }
     }
   })();
